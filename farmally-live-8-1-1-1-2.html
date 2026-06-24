@@ -8074,7 +8074,12 @@ window.walletProceedToPayment = async function(){
     // Vendy's own transaction id — whatever field it actually
     // comes back as. Try the likely names; widen this list once
     // confirmed from the console.log above.
-    const refid = data.refid || data.vendref || data.requestId || data.id || null;
+    // Vendy's other API responses wrap the real payload one level
+    // deeper under "data" (e.g. {status, code, msg, data:{...}}).
+    // Check both shapes — whichever this endpoint actually uses.
+    const inner = data.data || data;
+
+    const refid = inner.refid || inner.vendref || inner.requestId || inner.id || data.refid || null;
     if (refid) {
       await FA.supabase.from("deposit_intents")
         .update({ vendy_refid: refid })
@@ -8082,7 +8087,7 @@ window.walletProceedToPayment = async function(){
     }
 
     // Branch on shape: a hosted checkout link vs. a phone push.
-    const checkoutUrl = data.checkoutUrl || data.paymentUrl || data.url || data.link || null;
+    const checkoutUrl = inner.checkoutUrl || inner.paymentUrl || inner.url || inner.link || null;
 
     if (checkoutUrl) {
       try { sessionStorage.setItem("farmally_pending_deposit", clientRef); } catch(e){}

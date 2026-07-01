@@ -1,0 +1,4 @@
+[[redirects]]
+  from = "/"
+  to = "/farmally-1.html"
+  status = 200

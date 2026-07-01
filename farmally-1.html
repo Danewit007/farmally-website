@@ -5159,8 +5159,14 @@ async function faHandleSignup(e) {
   if (btn) { btn.disabled = true; btn.textContent = 'Creating account…'; }
 
   try {
-    await FA.signUp(email, password, firstName + ' ' + lastName, phone);
-    // Store email so the OTP verify handler knows which address to confirm
+    const { data: signUpData } = await FA.signUp(email, password, firstName + ' ' + lastName, phone);
+    // If Supabase returned a session immediately, email confirmation is OFF —
+    // skip the OTP screen and go straight to the dashboard.
+    if (signUpData && signUpData.session) {
+      authShowScreen('success');
+      return;
+    }
+    // Otherwise confirmation is required — show the OTP verify screen.
     window._pendingVerifyEmail = email;
     authShowScreen('verify'); // show email verify screen
     if (typeof window.startOtpCountdown === 'function') window.startOtpCountdown();

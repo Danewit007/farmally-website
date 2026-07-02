@@ -5159,10 +5159,10 @@ async function faHandleSignup(e) {
   if (btn) { btn.disabled = true; btn.textContent = 'Creating account…'; }
 
   try {
-    const { data: signUpData } = await FA.signUp(email, password, firstName + ' ' + lastName, phone);
+    const signUpData = await FA.signUp(email, password, firstName + ' ' + lastName, phone);
     // If Supabase returned a session immediately, email confirmation is OFF —
     // skip the OTP screen and go straight to the dashboard.
-    if (signUpData && signUpData.session) {
+    if (signUpData && (signUpData.session || (signUpData.user && signUpData.user.confirmed_at))) {
       authShowScreen('success');
       return;
     }

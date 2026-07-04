@@ -369,6 +369,11 @@
       // Update topbar user name
       const nameEls = document.querySelectorAll('.topbar-user-name, #topbar-name');
       nameEls.forEach(el => { el.textContent = _profile.full_name || 'Investor'; });
+      // Update dashboard greeting
+      const fullName = (_profile.full_name || '').trim();
+      const greetName = fullName ? fullName.split(' ')[0] : 'there';
+      const dashGreetEl = document.getElementById('dashGreetName');
+      if (dashGreetEl) dashGreetEl.textContent = greetName;
       // Update wallet display
       const walletEls = document.querySelectorAll('.wallet-balance-display');
       walletEls.forEach(el => { el.textContent = fmtNaira(_profile.wallet_balance_kobo); });
@@ -2739,23 +2744,29 @@
   <script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
   <script>
   /* ── EmailJS Configuration ─────────────────────────────────────────────────
-     Fill in all three values below to enable order-confirmation emails.
+     Fill in the values below to enable transactional emails sent via EmailJS
+     (order confirmations + the new-user welcome email).
 
      Setup steps (free tier: 200 emails / month):
        1. Sign up at https://www.emailjs.com
-       2. Add an Email Service (Gmail, Outlook, etc.)  → copy the Service ID
-       3. Create an Email Template                     → copy the Template ID
-          Template variables used: {{to_email}}, {{customer_name}},
-          {{order_id}}, {{order_items}}, {{total_amount}},
-          {{delivery_address}}, {{delivery_phone}}, {{payment_method}}
+       2. Add an Email Service (recommend "SMTP Server" using the same Brevo
+          SMTP credentials already used for Supabase auth emails, for
+          consistent branding/deliverability) → copy the Service ID
+       3. Create TWO Email Templates:
+          a) Order confirmation — variables: {{to_email}}, {{customer_name}},
+             {{order_id}}, {{order_items}}, {{total_amount}},
+             {{delivery_address}}, {{delivery_phone}}, {{payment_method}}
+          b) Welcome email — variables: {{to_email}}, {{to_name}}
+          Copy each Template ID.
        4. Account → API Keys                           → copy the Public Key
 
      Leave the 'YOUR_…' defaults in place to keep emails disabled without errors.
   ──────────────────────────────────────────────────────────────────────────── */
   window.EMAILJS_CONFIG = {
-    publicKey:  'YOUR_EMAILJS_PUBLIC_KEY',   // Account → API Keys
-    serviceId:  'YOUR_EMAILJS_SERVICE_ID',   // Email Services tab
-    templateId: 'YOUR_EMAILJS_TEMPLATE_ID',  // Email Templates tab
+    publicKey:         'yqYb7rQEsobEsk3mj',                 // Account → API Keys
+    serviceId:         'service_ldoizws',                   // Email Services tab
+    templateId:        'YOUR_EMAILJS_TEMPLATE_ID',          // Order confirmation template
+    welcomeTemplateId: 'template_twi0oa9',                  // New-user welcome template
   };
   (function() {
     if (window.EMAILJS_CONFIG.publicKey.startsWith('YOUR_')) {
@@ -5168,6 +5179,7 @@ async function faHandleSignup(e) {
     }
     // Otherwise confirmation is required — show the OTP verify screen.
     window._pendingVerifyEmail = email;
+    window._pendingVerifyName  = firstName;
     authShowScreen('verify'); // show email verify screen
     if (typeof window.startOtpCountdown === 'function') window.startOtpCountdown();
     // Populate verify screen with real (masked) contact details
@@ -5252,13 +5264,34 @@ async function faHandleVerify(e) {
   try {
     const { error } = await FA.supabase.auth.verifyOtp({ email, token, type: 'signup' });
     if (error) throw error;
+    // Fire the welcome email — best-effort, never blocks the success screen.
+    faSendWelcomeEmail(email, window._pendingVerifyName);
     window._pendingVerifyEmail = null;
+    window._pendingVerifyName  = null;
     authShowScreen('success');
   } catch (err) {
     const msg = err.message || 'Verification failed. Check the code and try again.';
     if (errEl) { errEl.style.color = '#E74C3C'; errEl.textContent = msg; errEl.style.display = 'block'; }
   } finally {
     if (btn) { btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd"/></svg> Verify Account'; btn.disabled = false; }
+  }
+}
+
+// ── Welcome email (new-user, sent right after OTP verification) ──
+async function faSendWelcomeEmail(email, firstName) {
+  try {
+    if (!window.emailjs) return;
+    const cfg = window.EMAILJS_CONFIG;
+    if (!cfg || cfg.serviceId.startsWith('YOUR_') || cfg.welcomeTemplateId.startsWith('YOUR_')) {
+      console.warn('[FarmAlly] EmailJS welcome template not configured — skipping welcome email.');
+      return;
+    }
+    await emailjs.send(cfg.serviceId, cfg.welcomeTemplateId, {
+      to_email: email,
+      to_name:  firstName || 'there',
+    });
+  } catch (e) {
+    console.warn('[FarmAlly] Welcome email error:', e);
   }
 }
 
@@ -5522,13 +5555,20 @@ const data = {
 
 window.faLoadDashboard = async function() {
   if (!window.FA || !FA.isLoggedIn()) return;
-  const profile = FA.getProfile();
+  let profile = FA.getProfile();
+
+  // For brand-new signups the profile row may not exist yet — retry
+  // a couple of times before giving up and showing "there".
+  if (!profile) {
+    for (let i = 0; i < 3; i++) {
+      await new Promise(r => setTimeout(r, 500));
+      profile = FA.getProfile();
+      if (profile) break;
+    }
+  }
   if (!profile) return;
 
   // ── Greeting ──────────────────────────────────────────────
-  // Defaults to first name ("Hi, Daniel!"). Change .split(' ')[0]
-  // to just `fullName` if you'd rather show the whole name
-  // ("Hi, Daniel Ibitoye!").
   const fullName = (profile.full_name || '').trim();
   const greetName = fullName ? fullName.split(' ')[0] : 'there';
   const dashGreetEl = document.getElementById('dashGreetName');

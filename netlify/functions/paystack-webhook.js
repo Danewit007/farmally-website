@@ -139,3 +139,5 @@ async function handleShopOrder(SUPABASE_URL, SERVICE_KEY, orderId) {
     headers,
     body: JSON.stringify({ status: 'paid' }),
   });
+}
+

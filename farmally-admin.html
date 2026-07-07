@@ -5,15 +5,16 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>FarmAlly — Admin</title>
 
-  <!-- Tailwind CSS -->
-  <script src="https://cdn.tailwindcss.com"></script>
-
   <!-- Supabase SDK -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 
   <!-- FarmAlly Supabase API layer (shared) -->
   <script>
-  <script>
+  /* ── BUG FIX #3: single source-of-truth for the main app URL.
+       Change this one line if the main file is ever renamed or deployed
+       as index.html — all logout / back-button redirects update automatically. ── */
+  window.FARMALLY_APP_URL = 'farmally.html';
+
   (function() {
     // ── Supabase client ──────────────────────────────────────
     const SUPABASE_URL  = 'https://gtjabetlqhirdwgzpvql.supabase.co';
@@ -55,10 +56,7 @@
       _session = null;
       _profile = null;
       window.location.hash = '';
-      window.location.href = 'index.html';
-    }
-
-    async function loadProfile() {
+      window.location.href = window.FARMALLY_APP_URL;
       if (!_session) return null;
       const { data, error } = await _sb.from('profiles')
         .select('*')
@@ -141,9 +139,22 @@
 
     // ── Shop ─────────────────────────────────────────────────
     async function getProducts(categorySlug) {
-      let query = _sb.from('products').select('*, categories(*)').eq('is_active', true);
+      // When filtering by category we use !inner (INNER JOIN) so that
+      // .eq('categories.slug') filters the *parent* product rows, not just
+      // the embedded category object. Without !inner, PostgREST treats it as
+      // a LEFT JOIN filter and all products are returned regardless of category.
+      // When loading all products we revert to a plain LEFT JOIN so products
+      // without a category are not accidentally excluded.
+      let query;
       if (categorySlug && categorySlug !== 'all') {
-        query = query.eq('categories.slug', categorySlug);
+        query = _sb.from('products')
+          .select('*, categories!inner(*)')
+          .eq('is_active', true)
+          .eq('categories.slug', categorySlug);
+      } else {
+        query = _sb.from('products')
+          .select('*, categories(*)')
+          .eq('is_active', true);
       }
       const { data, error } = await query.order('sold_count', { ascending: false });
       if (error) throw error;
@@ -180,6 +191,20 @@
     }
 
     // ── Admin ─────────────────────────────────────────────────
+    async function adminDeleteUser(userId) {
+      const { error } = await _sb.from('profiles').delete().eq('id', userId);
+      if (error) throw error;
+    }
+
+    async function adminGetAllInvestments() {
+      const { data, error } = await _sb
+        .from('user_investments')
+        .select('*, profiles(full_name, email), farm_listings(name, type)')
+        .order('created_at', { ascending: false });
+      if (error) throw error;
+      return data;
+    }
+
     async function adminGetAllUsers() {
       const { data, error } = await _sb.from('admin_users_view').select('*');
       if (error) throw error;
@@ -280,9 +305,8 @@
         // Redirect to dashboard if on landing/login
         const hash = window.location.hash.replace('#', '');
         if (!hash || hash === 'landing' || hash === 'login') {
-          window.location.href = 'index.html';
+          window.location.href = window.FARMALLY_APP_URL;
         }
-        _updateUIForUser();
       }
       // Listen for auth state changes
       _sb.auth.onAuthStateChange(async (event, session) => {
@@ -321,6 +345,7 @@
       // Admin
       adminGetAllUsers, adminGetAllTransactions, adminGetAllOrders,
       adminGetKPISummary, adminToggleSuspend, adminSetKYC,
+      adminGetAllInvestments, adminDeleteUser,
       adminGetProducts, adminSaveProduct, adminDeleteProduct, adminUpdateOrderStatus,
       // Realtime
       subscribeToWallet, subscribeToOrders,
@@ -331,24 +356,7 @@
     // Auto-init after DOM loads
     document.addEventListener('DOMContentLoaded', init);
 
-  </script>
-
-  <!-- Tailwind tokens -->
-  <script>
-    tailwind.config = {
-      theme: {
-        extend: {
-          colors: {
-            'farm-green':       '#2D6A4F',
-            'farm-green-light': '#52B788',
-            'farm-green-dark':  '#1B4332',
-            'farm-gold':        '#F4A020',
-            'farm-cream':       '#FAFAF7',
-            'farm-charcoal':    '#1F2937',
-          },
-        },
-      },
-    };
+  })();
   </script>
 
   <!-- Google Fonts -->
@@ -832,6 +840,12 @@
   .admin-filter-pill.active { background: var(--farm-green); color: #fff; border-color: var(--farm-green); }
   .admin-filter-pill:hover:not(.active) { border-color: var(--farm-green); color: var(--farm-green); }
 
+  .admin-btn-sm {
+    padding: 6px 12px; border-radius: 7px; font-size: 12px; font-weight: 700;
+    border: none; cursor: pointer; font-family: inherit; transition: opacity 0.15s;
+  }
+  .admin-btn-sm:hover { opacity: 0.85; }
+
   /* Confirm logout modal */
   .admin-modal-overlay {
     display: none; position: fixed; inset: 0;
@@ -1259,6 +1273,30 @@
   .sec-empty-icon { font-size: 40px; margin-bottom: 10px; }
   .sec-empty-title { font-size: 14px; font-weight: 700; color: #374151; margin-bottom: 4px; }
   .sec-empty-sub { font-size: 12px; }
+
+  /* ── Listing modal form ── */
+  .lmodal-label {
+    display: block; font-size: 11px; font-weight: 700;
+    letter-spacing: 0.06em; text-transform: uppercase;
+    color: #6B7280; margin-bottom: 5px;
+  }
+  .lmodal-input {
+    width: 100%; height: 38px; padding: 0 12px;
+    border: 1.5px solid #E5E7EB; border-radius: 8px;
+    font-size: 13px; font-family: inherit; color: #111827;
+    outline: none; transition: border-color 0.15s; box-sizing: border-box;
+    background: #FAFAFA;
+  }
+  .lmodal-input:focus { border-color: #2D6A4F; background: #fff; }
+  .lmodal-input::placeholder { color: #C4C4C4; }
+  .listings-status-pill {
+    display: inline-block; padding: 2px 8px; border-radius: 20px;
+    font-size: 11px; font-weight: 700;
+  }
+  .listings-status-active   { background:#D1FAE5; color:#065F46; }
+  .listings-status-paused   { background:#FEF3C7; color:#92400E; }
+  .listings-status-closed   { background:#FEE2E2; color:#991B1B; }
+  .listings-status-upcoming { background:#DBEAFE; color:#1E40AF; }
   </style>
 
 </head>
@@ -1271,7 +1309,7 @@
       <section id="admin-login-page" class="admin-page" data-title="Admin Login">
         <div id="admin-login-inner">
           <div class="admin-login-card" id="admin-login-card" style="position:relative;">
-            <button onclick="window.location.href='index.html'" title="Back to FarmAlly" style="position:absolute;top:14px;right:14px;width:30px;height:30px;border-radius:50%;border:none;background:rgba(0,0,0,0.07);cursor:pointer;display:flex;align-items:center;justify-content:center;color:#6B7280;transition:background 0.2s;" onmouseover="this.style.background='rgba(0,0,0,0.13)'" onmouseout="this.style.background='rgba(0,0,0,0.07)'">
+            <button onclick="window.location.href=window.FARMALLY_APP_URL" title="Back to FarmAlly" style="position:absolute;top:14px;right:14px;width:30px;height:30px;border-radius:50%;border:none;background:rgba(0,0,0,0.07);cursor:pointer;display:flex;align-items:center;justify-content:center;color:#6B7280;transition:background 0.2s;" onmouseover="this.style.background='rgba(0,0,0,0.13)'" onmouseout="this.style.background='rgba(0,0,0,0.07)'">
               <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"/></svg>
             </button>
             <!-- Shield icon -->
@@ -1381,6 +1419,11 @@
               Investments
               <span class="admin-tab-count" id="admin-invs-count">0</span>
             </button>
+            <button class="admin-tab" onclick="adminSwitchTab('listings', this)">
+              <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M3 4a1 1 0 011-1h12a1 1 0 011 1v2a1 1 0 01-1 1H4a1 1 0 01-1-1V4zM3 10a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H4a1 1 0 01-1-1v-6zM14 9a1 1 0 00-1 1v6a1 1 0 001 1h2a1 1 0 001-1v-6a1 1 0 00-1-1h-2z" clip-rule="evenodd"/></svg>
+              Listings
+              <span class="admin-tab-count" id="admin-listings-count">0</span>
+            </button>
             <button class="admin-tab" onclick="adminSwitchTab('activity', this)">
               <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clip-rule="evenodd"/></svg>
               Activity Log
@@ -1389,6 +1432,11 @@
               <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M2.166 4.999A11.954 11.954 0 0010 1.944 11.954 11.954 0 0017.834 5c.11.65.166 1.32.166 2.001 0 5.225-3.34 9.67-8 11.317C5.34 16.67 2 12.225 2 7c0-.682.057-1.35.166-2.001zm11.541 3.708a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>
               Security
               <span class="admin-tab-count" id="admin-security-count">0</span>
+            </button>
+            <button class="admin-tab" onclick="adminSwitchTab('withdrawals', this)">
+              <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor"><path d="M4 4a2 2 0 00-2 2v1h16V6a2 2 0 00-2-2H4z"/><path fill-rule="evenodd" d="M18 9H2v5a2 2 0 002 2h12a2 2 0 002-2V9zM4 13a1 1 0 011-1h1a1 1 0 110 2H5a1 1 0 01-1-1zm5-1a1 1 0 100 2h1a1 1 0 100-2H9z" clip-rule="evenodd"/></svg>
+              Withdrawals
+              <span class="admin-tab-count" id="admin-withdrawals-count">0</span>
             </button>
             <button class="admin-tab" onclick="adminSwitchTab('ecommerce', this)">
               <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor"><path d="M3 1a1 1 0 000 2h1.22l.305 1.222a.997.997 0 00.01.042l1.358 5.43-.893.892C3.74 11.846 4.632 14 6.414 14H15a1 1 0 000-2H6.414l1-1H14a1 1 0 00.894-.553l3-6A1 1 0 0017 3H6.28l-.31-1.243A1 1 0 005 1H3zM16 16.5a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0zM6.5 18a1.5 1.5 0 100-3 1.5 1.5 0 000 3z"/></svg>
@@ -1537,6 +1585,35 @@
             </div>
           </div>
 
+          <!-- ── WITHDRAWALS TAB ── -->
+          <div class="admin-panel admin-page-inner" id="admin-panel-withdrawals">
+            <div style="padding:28px">
+              <div class="admin-search-wrap">
+                <button class="admin-filter-pill active" data-filter="pending" onclick="adminSetWdFilter('pending',this)">Pending</button>
+                <button class="admin-filter-pill" data-filter="paid" onclick="adminSetWdFilter('paid',this)">Paid</button>
+                <button class="admin-filter-pill" data-filter="rejected" onclick="adminSetWdFilter('rejected',this)">Rejected</button>
+                <button class="admin-filter-pill" data-filter="all" onclick="adminSetWdFilter('all',this)">All</button>
+              </div>
+              <div class="admin-card">
+                <div class="admin-card-body" style="padding:0;overflow-x:auto;">
+                  <table class="admin-table" style="min-width:800px;">
+                    <thead>
+                      <tr>
+                        <th>User</th>
+                        <th>Amount</th>
+                        <th>Destination Account</th>
+                        <th>Requested</th>
+                        <th>Status</th>
+                        <th>Action</th>
+                      </tr>
+                    </thead>
+                    <tbody id="admin-wd-tbody"></tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+
           <!-- ── TRANSACTIONS TAB ── -->
           <div class="admin-panel admin-page-inner" id="admin-panel-transactions">
             <div style="padding:28px">
@@ -1598,6 +1675,178 @@
                   </table>
                 </div>
               </div>
+            </div>
+          </div>
+
+          <!-- ── INVESTMENT LISTINGS TAB ──────────────────────────
+               Manages the farm_listings table directly — this is
+               what actually appears on the live Investments page
+               for users to invest in. Add / edit / close listings
+               here (closing hides a listing from new investors
+               without deleting existing investors' records in it).
+          ── -->
+          <div class="admin-panel admin-page-inner" id="admin-panel-listings">
+            <div style="padding:28px">
+              <div class="admin-card">
+                <div class="admin-card-header">
+                  <div>
+                    <div class="admin-card-title">Investment Listings</div>
+                    <div class="admin-card-subtitle">What investors see and can put money into on the Investments page</div>
+                  </div>
+                  <button style="background:var(--farm-green);color:#fff;padding:8px 16px;border-radius:8px;font-weight:700;font-size:12px;border:none;cursor:pointer;display:flex;align-items:center;gap:6px;" onclick="listingsOpenModal(null)">
+                    <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 5a1 1 0 011 1v3h3a1 1 0 110 2h-3v3a1 1 0 11-2 0v-3H6a1 1 0 110-2h3V6a1 1 0 011-1z" clip-rule="evenodd"/></svg>
+                    Add Listing
+                  </button>
+                </div>
+                <div class="admin-card-body" style="padding:0;overflow-x:auto;">
+                  <table class="admin-table" style="min-width:820px;">
+                    <thead>
+                      <tr>
+                        <th>Listing</th>
+                        <th>Category</th>
+                        <th>Location</th>
+                        <th>Per Slot</th>
+                        <th>Min. Slots</th>
+                        <th>Duration</th>
+                        <th>ROI</th>
+                        <th>Status</th>
+                        <th></th>
+                      </tr>
+                    </thead>
+                    <tbody id="listings-tbody">
+                      <tr><td colspan="9" style="text-align:center;padding:24px;color:#9CA3AF;">Loading…</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Listing Add/Edit Modal -->
+          <div id="listing-modal-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9000;"></div>
+          <div id="listing-modal" style="display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#fff;border-radius:16px;width:min(640px,95vw);max-height:92vh;overflow-y:auto;z-index:9001;box-shadow:0 20px 60px rgba(0,0,0,0.25);">
+            <div style="padding:24px 28px 16px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #F3F4F6;">
+              <div>
+                <div id="listing-modal-title" style="font-family:'Sora',sans-serif;font-size:17px;font-weight:800;color:#111827;">Add Listing</div>
+                <div style="font-size:12px;color:#9CA3AF;margin-top:2px;">Goes live on the Investments page immediately on save</div>
+              </div>
+              <button onclick="listingsCloseModal()" style="width:32px;height:32px;border-radius:50%;border:none;background:#F3F4F6;cursor:pointer;display:flex;align-items:center;justify-content:center;color:#6B7280;">
+                <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"/></svg>
+              </button>
+            </div>
+            <div style="padding:24px 28px;">
+              <input type="hidden" id="lmodal-id" />
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+                <div style="grid-column:1/-1;">
+                  <label class="lmodal-label">Listing Name *</label>
+                  <input type="text" id="lmodal-name" placeholder="e.g. Sorghum Commodity Trade" class="lmodal-input" />
+                </div>
+                <div>
+                  <label class="lmodal-label">Category *</label>
+                  <select id="lmodal-type" class="lmodal-input">
+                    <option value="commodity_trading">Commodity Trading</option>
+                    <option value="crop_farming">Crop Farming</option>
+                    <option value="aquaculture">Fishery</option>
+                    <option value="poultry">Poultry</option>
+                    <option value="livestock">Livestock</option>
+                    <option value="agribusiness">Agribusiness</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="lmodal-label">Location *</label>
+                  <input type="text" id="lmodal-location" placeholder="e.g. Nigeria" class="lmodal-input" />
+                </div>
+                <div>
+                  <label class="lmodal-label">Risk Level</label>
+                  <select id="lmodal-risk" class="lmodal-input">
+                    <option value="low">Low</option>
+                    <option value="medium" selected>Medium</option>
+                    <option value="high">High</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="lmodal-label">Duration (months) *</label>
+                  <input type="number" id="lmodal-duration" placeholder="12" min="1" class="lmodal-input" />
+                </div>
+                <div>
+                  <label class="lmodal-label">ROI (% per annum) *</label>
+                  <input type="number" id="lmodal-roi" placeholder="25" min="0" step="0.1" class="lmodal-input" />
+                </div>
+                <div>
+                  <label class="lmodal-label">Emoji</label>
+                  <input type="text" id="lmodal-emoji" placeholder="🌾" maxlength="4" class="lmodal-input" />
+                </div>
+
+                <div style="grid-column:1/-1;border-top:1px dashed #E5E7EB;margin-top:4px;padding-top:16px;">
+                  <div style="font-size:12px;font-weight:800;color:#2D6A4F;margin-bottom:10px;">Slot pricing</div>
+                </div>
+                <div>
+                  <label class="lmodal-label">Price per Slot (₦) *</label>
+                  <input type="number" id="lmodal-slotprice" placeholder="1000000" min="0" class="lmodal-input" oninput="listingsRecalcPreview()" />
+                </div>
+                <div>
+                  <label class="lmodal-label">Minimum Slots *</label>
+                  <input type="number" id="lmodal-minslots" placeholder="5" min="1" class="lmodal-input" oninput="listingsRecalcPreview()" />
+                </div>
+                <div>
+                  <label class="lmodal-label">Total Slots Available *</label>
+                  <input type="number" id="lmodal-totalslots" placeholder="50" min="1" class="lmodal-input" oninput="listingsRecalcPreview()" />
+                </div>
+                <div>
+                  <label class="lmodal-label">Slots Already Filled</label>
+                  <input type="number" id="lmodal-filledslots" placeholder="0" min="0" value="0" class="lmodal-input" />
+                </div>
+                <div style="grid-column:1/-1;font-size:12px;color:#6B7280;background:#F0FDF4;border:1px solid #D1FAE5;border-radius:8px;padding:10px 12px;" id="lmodal-preview">
+                  Minimum investment: ₦0 · Total deal size: ₦0
+                </div>
+
+                <div style="grid-column:1/-1;border-top:1px dashed #E5E7EB;margin-top:4px;padding-top:16px;">
+                  <label class="lmodal-label">Description</label>
+                  <textarea id="lmodal-desc" rows="3" placeholder="What investors are putting their money into…" class="lmodal-input" style="resize:vertical;height:auto;padding:10px 12px;"></textarea>
+                </div>
+                <div style="grid-column:1/-1;">
+                  <label class="lmodal-label">Highlights (one per line)</label>
+                  <textarea id="lmodal-highlights" rows="3" placeholder="₦1,000,000 per slot, minimum 5 slots&#10;25% ROI over 12 months" class="lmodal-input" style="resize:vertical;height:auto;padding:10px 12px;"></textarea>
+                </div>
+                <div>
+                  <label class="lmodal-label">Manager / Desk Name</label>
+                  <input type="text" id="lmodal-manager" placeholder="FarmAlly Commodities Desk" class="lmodal-input" />
+                </div>
+                <div>
+                  <label class="lmodal-label">Manager Experience</label>
+                  <input type="text" id="lmodal-managerexp" placeholder="5+ years" class="lmodal-input" />
+                </div>
+                <div style="display:flex;align-items:center;gap:10px;padding-top:6px;">
+                  <input type="checkbox" id="lmodal-featured" style="width:16px;height:16px;accent-color:#2D6A4F;cursor:pointer;" />
+                  <label for="lmodal-featured" style="font-size:12px;color:#374151;cursor:pointer;">Feature this listing</label>
+                </div>
+                <div style="display:flex;align-items:center;gap:10px;padding-top:6px;">
+                  <input type="checkbox" id="lmodal-insured" style="width:16px;height:16px;accent-color:#2D6A4F;cursor:pointer;" onchange="document.getElementById('lmodal-insurer-wrap').style.display=this.checked?'block':'none'" />
+                  <label for="lmodal-insured" style="font-size:12px;color:#374151;cursor:pointer;">Insured investment</label>
+                </div>
+                <div id="lmodal-insurer-wrap" style="grid-column:1/-1;display:none;">
+                  <label class="lmodal-label">Insurance Provider</label>
+                  <input type="text" id="lmodal-insurer" placeholder="e.g. AIICO Insurance" class="lmodal-input" />
+                </div>
+              </div>
+
+              <div id="lmodal-error" style="display:none;color:#DC3545;font-size:12px;margin-top:14px;"></div>
+
+              <div style="display:flex;gap:10px;margin-top:24px;justify-content:flex-end;">
+                <button onclick="listingsCloseModal()" style="height:38px;padding:0 20px;border:1.5px solid #E5E7EB;border-radius:8px;background:#fff;font-size:13px;font-weight:600;color:#6B7280;cursor:pointer;">Cancel</button>
+                <button id="lmodal-save-btn" onclick="listingsSave()" style="height:38px;padding:0 24px;border:none;border-radius:8px;background:var(--farm-green);color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;">Save Listing</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Listing Close-confirmation Modal -->
+          <div id="listing-close-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9100;"></div>
+          <div id="listing-close-modal" style="display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#fff;border-radius:16px;width:min(380px,90vw);z-index:9101;box-shadow:0 20px 60px rgba(0,0,0,0.25);padding:24px;">
+            <div style="font-family:'Sora',sans-serif;font-size:16px;font-weight:800;color:#111827;margin-bottom:8px;">Close this listing?</div>
+            <div id="listing-close-msg" style="font-size:13px;color:#6B7280;line-height:1.5;margin-bottom:20px;"></div>
+            <div style="display:flex;gap:10px;justify-content:flex-end;">
+              <button onclick="listingsCloseCloseModal()" style="height:36px;padding:0 16px;border:1.5px solid #E5E7EB;border-radius:8px;background:#fff;font-size:13px;font-weight:600;color:#6B7280;cursor:pointer;">Cancel</button>
+              <button onclick="listingsConfirmClose()" style="height:36px;padding:0 16px;border:none;border-radius:8px;background:#DC3545;color:#fff;font-size:13px;font-weight:700;cursor:pointer;">Close Listing</button>
             </div>
           </div>
 
@@ -2376,75 +2625,19 @@
      In production, replace with a real backend auth check.
      Demo credentials: admin@farmally.ng / Admin@2026
   ─────────────────────────────────────────────────────────────── */
-  const ADMIN_CREDENTIALS = {
-    email:    'admin@farmally.ng',
-    password: 'Admin@2026',
-    name:     'Super Admin',
-    initials: 'SA'
-  };
+  // Admin access is now gated by a real Supabase login + the same
+  // profiles.role === 'farmally_admin' check used everywhere else in
+  // the app (RLS policies, is_farmally_admin()). No password is stored
+  // in this file — see adminDoLogin() below.
   const ADMIN_SESSION_KEY = 'farmally_admin_session';
 
-  /* ─── MOCK DATA ─────────────────────────────────────────────── */
-  const ADMIN_MOCK_USERS = [
-    { id:'U001', name:'Tunde Adeyemi',     email:'tunde@example.com',   phone:'+234 801 234 5678', status:'active',    investments:3, joined:'3 Jan 2026',  avatarColor:'#2D6A4F', restricted:false, warnings:0 },
-    { id:'U002', name:'Amaka Okonkwo',     email:'amaka@example.com',   phone:'+234 802 345 6789', status:'active',    investments:5, joined:'8 Jan 2026',  avatarColor:'#1D4ED8', restricted:false, warnings:0 },
-    { id:'U003', name:'Emeka Nwosu',       email:'emeka@example.com',   phone:'+234 803 456 7890', status:'suspended', investments:1, joined:'15 Jan 2026', avatarColor:'#7C3AED', restricted:true,  warnings:2 },
-    { id:'U004', name:'Bisi Oladele',      email:'bisi@example.com',    phone:'+234 804 567 8901', status:'active',    investments:2, joined:'20 Jan 2026', avatarColor:'#D97706', restricted:false, warnings:1 },
-    { id:'U005', name:'Fatima Abubakar',   email:'fatima@example.com',  phone:'+234 805 678 9012', status:'pending',   investments:0, joined:'28 Jan 2026', avatarColor:'#DB2777', restricted:false, warnings:0 },
-    { id:'U006', name:'Chidi Eze',         email:'chidi@example.com',   phone:'+234 806 789 0123', status:'active',    investments:4, joined:'2 Feb 2026',  avatarColor:'#059669', restricted:false, warnings:0 },
-    { id:'U007', name:'Ngozi Anyanwu',     email:'ngozi@example.com',   phone:'+234 807 890 1234', status:'active',    investments:7, joined:'10 Feb 2026', avatarColor:'#DC2626', restricted:false, warnings:0 },
-    { id:'U008', name:'Babatunde Olawale', email:'babs@example.com',    phone:'+234 808 901 2345', status:'suspended', investments:2, joined:'14 Feb 2026', avatarColor:'#0891B2', restricted:true,  warnings:3 },
-    { id:'U009', name:'Seun Okafor',       email:'seun@example.com',    phone:'+234 809 012 3456', status:'active',    investments:1, joined:'18 Feb 2026', avatarColor:'#65A30D', restricted:false, warnings:0 },
-    { id:'U010', name:'Yetunde Bakare',    email:'yetunde@example.com', phone:'+234 810 123 4567', status:'pending',   investments:0, joined:'22 Feb 2026', avatarColor:'#9333EA', restricted:false, warnings:0 },
-    { id:'U011', name:'Adaeze Obi',        email:'adaeze@example.com',  phone:'+234 811 234 5678', status:'active',    investments:6, joined:'1 Mar 2026',  avatarColor:'#C2410C', restricted:false, warnings:0 },
-    { id:'U012', name:'Musa Usman',        email:'musa@example.com',    phone:'+234 812 345 6789', status:'active',    investments:3, joined:'5 Mar 2026',  avatarColor:'#1E40AF', restricted:false, warnings:1 },
-  ];
-
-  const ADMIN_MOCK_TXNS = [
-    { id:'TX0091', user:'Tunde Adeyemi',   type:'credit',     cat:'Wallet Funding',      amount:150000, status:'completed', date:'Today, 9:12 AM',    emoji:'💰' },
-    { id:'TX0090', user:'Amaka Okonkwo',   type:'investment', cat:'Farm Investment',     amount:50000,  status:'completed', date:'Today, 8:44 AM',    emoji:'🌾' },
-    { id:'TX0089', user:'Chidi Eze',       type:'debit',      cat:'Withdrawal',          amount:75000,  status:'processing',date:'Today, 7:30 AM',    emoji:'🏦' },
-    { id:'TX0088', user:'Ngozi Anyanwu',   type:'investment', cat:'Farm Investment',     amount:25000,  status:'completed', date:'Yesterday, 6:00 PM',emoji:'🌾' },
-    { id:'TX0087', user:'Bisi Oladele',    type:'credit',     cat:'Wallet Funding',      amount:200000, status:'completed', date:'Yesterday, 3:15 PM',emoji:'💰' },
-    { id:'TX0086', user:'Adaeze Obi',      type:'credit',     cat:'ROI Payout',          amount:18500,  status:'completed', date:'Yesterday, 12:00 PM',emoji:'📈' },
-    { id:'TX0085', user:'Musa Usman',      type:'debit',      cat:'Withdrawal',          amount:30000,  status:'failed',    date:'2 days ago',        emoji:'🏦' },
-    { id:'TX0084', user:'Seun Okafor',     type:'investment', cat:'Farm Investment',     amount:10000,  status:'completed', date:'2 days ago',        emoji:'🌾' },
-    { id:'TX0083', user:'Emeka Nwosu',     type:'credit',     cat:'Wallet Funding',      amount:80000,  status:'completed', date:'3 days ago',        emoji:'💰' },
-    { id:'TX0082', user:'Babatunde Olawale',type:'debit',     cat:'Card Payment',        amount:45000,  status:'processing',date:'3 days ago',        emoji:'💳' },
-    { id:'TX0081', user:'Fatima Abubakar', type:'credit',     cat:'Referral Bonus',      amount:5000,   status:'completed', date:'4 days ago',        emoji:'🎁' },
-    { id:'TX0080', user:'Tunde Adeyemi',   type:'investment', cat:'Farm Investment',     amount:100000, status:'completed', date:'4 days ago',        emoji:'🌾' },
-  ];
-
-  const ADMIN_MOCK_INVS = [
-    { id:'INV001', farm:'Ofada Rice Farm — Ogun State',       investor:'Amaka Okonkwo',   amount:50000,  roi:'18%', duration:'12 months', status:'active'    },
-    { id:'INV002', farm:'Broiler Chicken Farm — Ogun State',  investor:'Tunde Adeyemi',   amount:35000,  roi:'22%', duration:'6 months',  status:'active'    },
-    { id:'INV003', farm:'Tilapia Aquafarm — Delta State',     investor:'Ngozi Anyanwu',   amount:80000,  roi:'15%', duration:'9 months',  status:'active'    },
-    { id:'INV004', farm:'Tomato Greenhouse — Kano State',     investor:'Chidi Eze',        amount:20000,  roi:'20%', duration:'4 months',  status:'completed' },
-    { id:'INV005', farm:'Cassava Processing — Benue State',   investor:'Bisi Oladele',     amount:60000,  roi:'16%', duration:'8 months',  status:'active'    },
-    { id:'INV006', farm:'Maize Hybrid Seed Farm — Kaduna',    investor:'Adaeze Obi',       amount:45000,  roi:'19%', duration:'7 months',  status:'active'    },
-    { id:'INV007', farm:'Catfish Aquafarm — Delta State',     investor:'Musa Usman',       amount:25000,  roi:'17%', duration:'5 months',  status:'pending'   },
-    { id:'INV008', farm:'Honey Apiary — Benue State',         investor:'Tunde Adeyemi',    amount:15000,  roi:'21%', duration:'12 months', status:'active'    },
-    { id:'INV009', farm:'Palm Oil Processing — Rivers State', investor:'Ngozi Anyanwu',    amount:120000, roi:'14%', duration:'18 months', status:'active'    },
-    { id:'INV010', farm:'Free-Range Poultry — Lagos State',   investor:'Seun Okafor',      amount:10000,  roi:'22%', duration:'6 months',  status:'completed' },
-  ];
-
-  const ADMIN_MOCK_ACTIVITIES = [
-    { icon:'👤', bg:'#EFF6FF', text:'<strong>Tunde Adeyemi</strong> logged in from Lagos, NG', time:'Today · 9:12 AM' },
-    { icon:'💰', bg:'#ECFDF5', text:'<strong>Tunde Adeyemi</strong> funded wallet with <strong>₦150,000</strong>', time:'Today · 9:12 AM' },
-    { icon:'🌾', bg:'#F0FDF4', text:'<strong>Amaka Okonkwo</strong> invested <strong>₦50,000</strong> in Ofada Rice Farm', time:'Today · 8:44 AM' },
-    { icon:'🚫', bg:'#FEF2F2', text:'Admin suspended account of <strong>Emeka Nwosu</strong>', time:'Today · 8:00 AM' },
-    { icon:'🏦', bg:'#FFFBEB', text:'<strong>Chidi Eze</strong> initiated withdrawal of <strong>₦75,000</strong>', time:'Today · 7:30 AM' },
-    { icon:'👤', bg:'#EFF6FF', text:'<strong>Bisi Oladele</strong> logged in from Abuja, NG', time:'Yesterday · 6:05 PM' },
-    { icon:'💰', bg:'#ECFDF5', text:'<strong>Bisi Oladele</strong> funded wallet with <strong>₦200,000</strong>', time:'Yesterday · 6:02 PM' },
-    { icon:'📈', bg:'#F0FDF4', text:'ROI payout of <strong>₦18,500</strong> sent to <strong>Adaeze Obi</strong>', time:'Yesterday · 12:00 PM' },
-    { icon:'🌾', bg:'#F0FDF4', text:'<strong>Ngozi Anyanwu</strong> invested <strong>₦25,000</strong> in Tilapia Aquafarm', time:'Yesterday · 11:15 AM' },
-    { icon:'✅', bg:'#F0FDF4', text:'<strong>Seun Okafor</strong> completed KYC verification', time:'2 days ago · 4:30 PM' },
-    { icon:'🔑', bg:'#EFF6FF', text:'<strong>Musa Usman</strong> changed account password', time:'2 days ago · 3:15 PM' },
-    { icon:'🆕', bg:'#F5F3FF', text:'New user <strong>Yetunde Bakare</strong> registered', time:'2 days ago · 10:00 AM' },
-    { icon:'🆕', bg:'#F5F3FF', text:'New user <strong>Fatima Abubakar</strong> registered', time:'3 days ago · 2:45 PM' },
-    { icon:'💰', bg:'#ECFDF5', text:'<strong>Emeka Nwosu</strong> funded wallet with <strong>₦80,000</strong>', time:'3 days ago · 10:20 AM' },
-    { icon:'🌾', bg:'#F0FDF4', text:'<strong>Tunde Adeyemi</strong> invested <strong>₦100,000</strong> in Honey Apiary', time:'4 days ago · 9:00 AM' },
-  ];
+  /* ─── LIVE DATA STORE ───────────────────────────────────────── */
+  // These are populated from Supabase on every dashboard render.
+  // All render and action functions read from these directly.
+  let _LIVE_USERS      = [];
+  let _LIVE_TXNS       = [];
+  let _LIVE_INVS       = [];
+  let _LIVE_ACTIVITIES = [];
 
   /* ─── SESSION HELPERS ──────────────────────────────────────── */
   function adminSetSession(data) {
@@ -2475,7 +2668,7 @@
     }
   };
 
-  window.adminDoLogin = function() {
+  window.adminDoLogin = async function() {
     const email = (document.getElementById('admin-email-input').value || '').trim().toLowerCase();
     const pw    = (document.getElementById('admin-pw-input').value || '');
     const btn   = document.getElementById('admin-login-btn');
@@ -2505,39 +2698,66 @@
     btn.classList.add('loading');
     btn.innerHTML = '<span class="admin-spinner"></span> Verifying…';
 
-    setTimeout(function() {
-      if (email === ADMIN_CREDENTIALS.email.toLowerCase() && pw === ADMIN_CREDENTIALS.password) {
-        // Success
-        adminSetSession({ loggedIn: true, name: ADMIN_CREDENTIALS.name, initials: ADMIN_CREDENTIALS.initials, ts: Date.now() });
-        adminShowAdminNav();
-        btn.classList.remove('loading');
-        btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg> Access Granted!';
-        btn.style.background = '#059669';
-        // Clear inputs
-        document.getElementById('admin-email-input').value = '';
-        document.getElementById('admin-pw-input').value = '';
-        setTimeout(function() {
-          FarmAlly.navigate('admin-dashboard');
-          adminRenderDashboard();
-          // Reset button
-          btn.style.background = '';
-          btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd"/></svg> Sign In to Admin Panel';
-          btn.classList.remove('loading');
-        }, 800);
-      } else {
-        // Failed
-        btn.classList.remove('loading');
-        btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd"/></svg> Sign In to Admin Panel';
-        document.getElementById('admin-pw-err').textContent = 'Incorrect email or password.';
-        document.getElementById('admin-pw-err').classList.add('visible');
-        document.getElementById('admin-pw-input').classList.add('error');
-        document.getElementById('admin-email-input').classList.add('error');
-        if (card) {
-          card.classList.add('admin-login-shake');
-          setTimeout(function() { card.classList.remove('admin-login-shake'); }, 500);
-        }
+    function showFailure(message) {
+      btn.classList.remove('loading');
+      btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd"/></svg> Sign In to Admin Panel';
+      document.getElementById('admin-pw-err').textContent = message;
+      document.getElementById('admin-pw-err').classList.add('visible');
+      document.getElementById('admin-pw-input').classList.add('error');
+      document.getElementById('admin-email-input').classList.add('error');
+      if (card) {
+        card.classList.add('admin-login-shake');
+        setTimeout(function() { card.classList.remove('admin-login-shake'); }, 500);
       }
-    }, 1000);
+    }
+
+    try {
+      // 1. Real Supabase authentication — this is a genuine account
+      //    login, not a hardcoded check. Wrong password fails right here.
+      const { data: authData, error: authError } = await FA.supabase.auth.signInWithPassword({ email, password: pw });
+      if (authError) throw new Error('Incorrect email or password.');
+
+      // 2. Verify this account actually has admin privileges — same
+      //    role check the rest of the app relies on via RLS.
+      const { data: profile, error: profErr } = await FA.supabase.from('profiles')
+        .select('role, full_name')
+        .eq('id', authData.user.id)
+        .single();
+      if (profErr) throw new Error('Could not verify admin access. Please try again.');
+
+      if (profile.role !== 'farmally_admin') {
+        await FA.supabase.auth.signOut(); // don't leave a signed-in non-admin session lying around
+        throw new Error('This account does not have admin access.');
+      }
+
+      // Success — store a lightweight local flag (used only for instant
+      // UI decisions like showing the nav); the REAL gate on every data
+      // request is Supabase's own RLS check against this session.
+      const initials = (profile.full_name || 'Admin').split(' ').map(function(w){ return w[0]; }).join('').slice(0,2).toUpperCase();
+      adminSetSession({ loggedIn: true, name: profile.full_name || 'Admin', initials: initials, ts: Date.now() });
+      adminShowAdminNav();
+      btn.classList.remove('loading');
+      btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg> Access Granted!';
+      btn.style.background = '#059669';
+      document.getElementById('admin-email-input').value = '';
+      document.getElementById('admin-pw-input').value = '';
+
+      setTimeout(function() {
+        document.querySelectorAll('section.admin-page').forEach(function(s) {
+          s.classList.remove('active');
+        });
+        var dash = document.getElementById('admin-dashboard-page');
+        if (dash) dash.classList.add('active');
+
+        window.adminRenderDashboard();
+
+        btn.style.background = '';
+        btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd"/></svg> Sign In to Admin Panel';
+        btn.classList.remove('loading');
+      }, 800);
+    } catch (e) {
+      showFailure(e.message || 'Incorrect email or password.');
+    }
   };
 
   // Allow Enter key on login form
@@ -2576,7 +2796,7 @@
     adminClearSession();
     adminHideAdminNav();
     document.getElementById('admin-logout-modal').classList.remove('open');
-    window.location.href = 'index.html';
+    window.location.href = window.FARMALLY_APP_URL;
   };
 
   /* ─── GUARD: redirect if not admin ───────────────────────── */
@@ -2600,10 +2820,12 @@
     if (clickedBtn) clickedBtn.classList.add('active');
     // Lazy-render security tab on first open
     if (name === 'security') { adminRenderSecurity(); }
+    if (name === 'listings') { listingsLoad(); }
+    if (name === 'withdrawals') { adminLoadWithdrawals(); }
   };
   window.adminSwitchTabByName = function(name) {
     const tabs = document.querySelectorAll('.admin-tab');
-    const panelNames = ['overview','users','transactions','investments','activity','security'];
+    const panelNames = ['overview','users','transactions','investments','listings','activity','security','ecommerce','withdrawals'];
     const idx = panelNames.indexOf(name);
     if (idx >= 0) adminSwitchTab(name, tabs[idx]);
   };
@@ -2617,77 +2839,116 @@
   }
 
   /* ─── RENDER DASHBOARD ───────────────────────────────────── */
-  // Async wrapper: loads live data then renders
   window.adminRenderDashboard = async function() {
-    if (window.FA && FA.isLoggedIn() && FA.isAdmin()) {
-      try {
-        const [users, txns, kpi] = await Promise.all([
-          FA.adminGetAllUsers(),
-          FA.adminGetAllTransactions(),
-          FA.adminGetKPISummary()
-        ]);
+    // Show loading state on key elements
+    const uc = document.getElementById('admin-users-count');
+    const tc = document.getElementById('admin-txns-count');
+    const ic = document.getElementById('admin-invs-count');
+    if (uc) uc.textContent = '…';
+    if (tc) tc.textContent = '…';
+    if (ic) ic.textContent = '…';
 
-        // Merge live users into mock array format for existing render functions
-        if (users && users.length > 0) {
-          window.ADMIN_MOCK_USERS = users.map(function(u) {
-            return {
-              id: u.id,
-              name: u.full_name || u.email.split('@')[0],
-              email: u.email,
-              phone: u.phone || '—',
-              status: u.is_active ? (u.kyc_status === 'suspended' ? 'suspended' : (u.kyc_status === 'pending' ? 'pending' : 'active')) : 'suspended',
-              investments: 0,
-              joined: new Date(u.created_at).toLocaleDateString('en-NG', { year:'numeric', month:'short', day:'numeric' }),
-              avatarColor: '#2D6A4F',
-              kyc: u.kyc_status,
-              walletNgn: u.wallet_balance_ngn || 0
-            };
+    // Fire-and-forget: populate the Withdrawals tab's pending-count badge
+    // without blocking the rest of the dashboard render.
+    if (typeof adminLoadWithdrawals === 'function') { adminLoadWithdrawals(); }
+
+    try {
+      // Load users, transactions, and investments in parallel from Supabase.
+      // The FA.isLoggedIn() gate has been removed — the admin authenticates
+      // via local credentials, not Supabase, so that check always returned
+      // false and the admin panel always showed mock/hardcoded data.
+      const [users, txns, invs] = await Promise.all([
+        FA.adminGetAllUsers(),
+        FA.adminGetAllTransactions(),
+        FA.adminGetAllInvestments(),
+      ]);
+
+      if (users && users.length > 0) {
+        _LIVE_USERS.length = 0;
+        users.forEach(function(u) {
+          _LIVE_USERS.push({
+            id:           u.id,
+            name:         u.full_name || u.email.split('@')[0],
+            email:        u.email,
+            phone:        u.phone || '—',
+            status:       u.is_suspended ? 'suspended' : (u.kyc_status === 'pending' ? 'pending' : 'active'),
+            investments:  u.investment_count || 0,
+            joined:       new Date(u.created_at).toLocaleDateString('en-NG', { year:'numeric', month:'short', day:'numeric' }),
+            avatarColor:  '#2D6A4F',
+            kyc:          u.kyc_status || 'pending',
+            walletNgn:    u.wallet_balance_kobo ? u.wallet_balance_kobo / 100 : 0,
+            restricted:   u.is_suspended || false,
+            warnings:     u.warning_count || 0,
           });
-        }
-
-        // Merge live transactions
-        if (txns && txns.length > 0) {
-          window.ADMIN_MOCK_TXNS = txns.map(function(t) {
-            return {
-              id: t.id.substring(0,13).toUpperCase(),
-              user: t.full_name || t.email,
-              email: t.email,
-              type: t.type,
-              amount: parseFloat(t.amount_ngn) || 0,
-              status: t.status,
-              date: new Date(t.created_at).toLocaleDateString('en-NG', { year:'numeric', month:'short', day:'numeric' }),
-              ref: t.reference || '—'
-            };
-          });
-        }
-
-        // Update KPI from live summary
-        if (kpi) {
-          const uc = document.getElementById('admin-users-count');
-          const tc = document.getElementById('admin-txns-count');
-          if (uc) uc.textContent = kpi.total_users;
-          if (tc) tc.textContent = txns ? txns.length : 0;
-        }
-
-      } catch(err) {
-        console.warn('Admin live data load failed, using mock data:', err.message);
+        });
       }
+
+      if (txns && txns.length > 0) {
+        const txTypeIcon = { deposit:'💰', investment:'🌾', withdrawal:'🏦', roi_payout:'📈', transfer:'💸' };
+        _LIVE_TXNS.length = 0;
+        txns.forEach(function(t) {
+          _LIVE_TXNS.push({
+            id:     (t.id || '').substring(0,13).toUpperCase(),
+            user:   t.full_name || t.email || '—',
+            email:  t.email || '—',
+            type:   t.amount_kobo >= 0 ? 'credit' : 'debit',
+            cat:    (t.type || 'transaction').replace(/_/g,' ').replace(/\b\w/g, c => c.toUpperCase()),
+            amount: Math.abs((t.amount_kobo || 0) / 100),
+            status: t.status || 'completed',
+            date:   new Date(t.created_at).toLocaleDateString('en-NG', { year:'numeric', month:'short', day:'numeric' }),
+            ref:    t.reference || '—',
+            emoji:  txTypeIcon[t.type] || '💳',
+          });
+        });
+
+        // Build activity log from most recent transactions
+        _LIVE_ACTIVITIES.length = 0;
+        _LIVE_TXNS.slice(0, 20).forEach(function(t) {
+          const isDebit = t.type === 'debit';
+          _LIVE_ACTIVITIES.push({
+            icon: t.emoji,
+            bg:   isDebit ? '#FFFBEB' : '#ECFDF5',
+            text: '<strong>' + t.user + '</strong> — ' + t.cat + ' of <strong>₦' + t.amount.toLocaleString('en-NG') + '</strong>',
+            time: t.date,
+          });
+        });
+      }
+
+      if (invs && invs.length > 0) {
+        _LIVE_INVS.length = 0;
+        invs.forEach(function(inv) {
+          const farm    = inv.farm_listings || {};
+          const profile = inv.profiles     || {};
+          _LIVE_INVS.push({
+            id:       inv.id,
+            farm:     farm.name || 'Unknown Farm',
+            investor: profile.full_name || profile.email || '—',
+            amount:   (inv.amount_kobo || 0) / 100,
+            roi:      (inv.roi_percent || 0) + '%',
+            duration: inv.duration_months ? inv.duration_months + ' months' : '—',
+            status:   inv.status || 'active',
+          });
+        });
+      }
+
+    } catch(err) {
+      console.warn('[Admin] Live data load failed:', err.message);
+      // _LIVE_* arrays remain empty — UI will show "No data yet" states
     }
 
-    // Now render with whatever data we have (live or mock)
     _adminRenderDashboardSync();
   };
 
   function _adminRenderDashboardSync() {
-    const totalUsers      = (window.ADMIN_MOCK_USERS || ADMIN_MOCK_USERS).length;
-    const liveUsers = window.ADMIN_MOCK_USERS || ADMIN_MOCK_USERS;
+    const totalUsers      = (window._LIVE_USERS || _LIVE_USERS).length;
+    const liveUsers = window._LIVE_USERS || _LIVE_USERS;
     const activeUsers     = liveUsers.filter(u => u.status === 'active').length;
-    const suspendedUsers  = ADMIN_MOCK_USERS.filter(u => u.status === 'suspended').length;
-    const pendingUsers    = ADMIN_MOCK_USERS.filter(u => u.status === 'pending').length;
-    const totalInvs       = ADMIN_MOCK_INVS.length;
-    const totalTxns       = ADMIN_MOCK_TXNS.length;
-    const totalVolume     = ADMIN_MOCK_TXNS.reduce(function(s,t){ return s + t.amount; }, 0);
-    const totalInvVolume  = ADMIN_MOCK_INVS.reduce(function(s,i){ return s + i.amount; }, 0);
+    const suspendedUsers  = _LIVE_USERS.filter(u => u.status === 'suspended').length;
+    const pendingUsers    = _LIVE_USERS.filter(u => u.status === 'pending').length;
+    const totalInvs       = _LIVE_INVS.length;
+    const totalTxns       = _LIVE_TXNS.length;
+    const totalVolume     = _LIVE_TXNS.reduce(function(s,t){ return s + t.amount; }, 0);
+    const totalInvVolume  = _LIVE_INVS.reduce(function(s,i){ return s + i.amount; }, 0);
 
     // Update tab counts
     const uc = document.getElementById('admin-users-count');
@@ -2724,7 +2985,7 @@
       sumBar.innerHTML = [
         { label:'Total Tx Volume', value: fmtNaira(totalVolume) },
         { label:'Investment Volume', value: fmtNaira(totalInvVolume) },
-        { label:'Active Investments', value: ADMIN_MOCK_INVS.filter(function(i){return i.status==='active';}).length },
+        { label:'Active Investments', value: _LIVE_INVS.filter(function(i){return i.status==='active';}).length },
         { label:'Avg Investment', value: fmtNaira(Math.round(totalInvVolume / totalInvs)) },
         { label:'Platform Health', value: '✅ All Systems Go' },
       ].map(function(s, i, arr) {
@@ -2736,7 +2997,7 @@
     // Overview users table (recent 5)
     const oUsersTbody = document.getElementById('admin-overview-users-tbody');
     if (oUsersTbody) {
-      oUsersTbody.innerHTML = ADMIN_MOCK_USERS.slice(0,5).map(function(u) {
+      oUsersTbody.innerHTML = _LIVE_USERS.slice(0,5).map(function(u) {
         return '<tr>'
           + '<td><div class="admin-user-name-wrap"><div class="admin-user-avatar" style="background:' + u.avatarColor + '">' + initials(u.name) + '</div><div><div class="admin-user-name">' + u.name + '</div><div class="admin-user-email">' + u.email + '</div></div></div></td>'
           + '<td><span class="admin-status ' + u.status + '">' + (u.status === 'pending' ? 'Pending KYC' : u.status.charAt(0).toUpperCase() + u.status.slice(1)) + '</span></td>'
@@ -2748,7 +3009,7 @@
     // Overview transactions
     const oTxnsBody = document.getElementById('admin-overview-txns-body');
     if (oTxnsBody) {
-      oTxnsBody.innerHTML = ADMIN_MOCK_TXNS.slice(0,6).map(function(t) {
+      oTxnsBody.innerHTML = _LIVE_TXNS.slice(0,6).map(function(t) {
         return '<div class="admin-tx-row">'
           + '<div class="admin-tx-icon" style="background:' + (t.type==='credit'?'#ECFDF5':t.type==='investment'?'#F0FDF4':'#FEF2F2') + '">' + t.emoji + '</div>'
           + '<div class="admin-tx-info"><div class="admin-tx-name">' + t.cat + '</div><div class="admin-tx-meta">' + t.user + '</div></div>'
@@ -2760,7 +3021,7 @@
     // Overview activity
     const oActivityBody = document.getElementById('admin-overview-activity-body');
     if (oActivityBody) {
-      oActivityBody.innerHTML = ADMIN_MOCK_ACTIVITIES.slice(0,8).map(function(a) {
+      oActivityBody.innerHTML = _LIVE_ACTIVITIES.slice(0,8).map(function(a) {
         return '<div class="admin-activity-item">'
           + '<div class="admin-activity-icon" style="background:' + a.bg + '">' + a.icon + '</div>'
           + '<div class="admin-activity-body"><div class="admin-activity-text">' + a.text + '</div><div class="admin-activity-time">' + a.time + '</div></div>'
@@ -2771,7 +3032,7 @@
     // Overview investments snapshot
     const oInvsBody = document.getElementById('admin-overview-invs-body');
     if (oInvsBody) {
-      oInvsBody.innerHTML = ADMIN_MOCK_INVS.slice(0,5).map(function(inv) {
+      oInvsBody.innerHTML = _LIVE_INVS.slice(0,5).map(function(inv) {
         var statusColors = { active:'#D1FAE5', completed:'#DBEAFE', pending:'#FEF3C7' };
         var textColors   = { active:'#065F46', completed:'#1D4ED8', pending:'#92400E' };
         return '<div style="padding:10px 0;border-bottom:1px solid #F9FAFB;">'
@@ -2788,16 +3049,16 @@
     }
 
     // Full Users table
-    adminRenderUsersTable(ADMIN_MOCK_USERS);
+    adminRenderUsersTable(_LIVE_USERS);
 
     // Full Transactions table
-    adminRenderTxnsTable(ADMIN_MOCK_TXNS);
+    adminRenderTxnsTable(_LIVE_TXNS);
 
     // Full Investments table
-    adminRenderInvsTable(ADMIN_MOCK_INVS);
+    adminRenderInvsTable(_LIVE_INVS);
 
     // Full Activity log
-    adminRenderActivityLog(ADMIN_MOCK_ACTIVITIES);
+    adminRenderActivityLog(_LIVE_ACTIVITIES);
 
     // Init user stats ribbon & security count
     umRenderStatsRibbon();
@@ -2841,7 +3102,7 @@
   };
   window.adminFilterUsers = function() {
     const q = (document.getElementById('admin-users-search') && document.getElementById('admin-users-search').value || '').toLowerCase();
-    let filtered = ADMIN_MOCK_USERS;
+    let filtered = _LIVE_USERS;
     if (_activeUserFilter !== 'all') filtered = filtered.filter(function(u){ return u.status === _activeUserFilter; });
     if (q) filtered = filtered.filter(function(u){ return u.name.toLowerCase().includes(q) || u.email.toLowerCase().includes(q) || (u.phone && u.phone.includes(q)); });
     adminRenderUsersTable(filtered);
@@ -2849,33 +3110,31 @@
   window.adminViewUser = function(id) {
     umOpenProfile(id);
   };
-  window.adminToggleSuspend = function(id) {
-    const u = ADMIN_MOCK_USERS.find(function(x){return x.id===id;});
+  window.adminToggleSuspend = async function(id) {
+    const u = _LIVE_USERS.find(function(x){return x.id===id;});
     if (!u) return;
     const wasSuspended = u.status === 'suspended';
-    u.status = wasSuspended ? 'active' : 'suspended';
-    umAddAuditEntry(wasSuspended ? 'Reactivated Account' : 'Suspended Account', u.name, wasSuspended ? 'success' : 'warn');
-    umAddSecurityLog(wasSuspended ? 'Account reactivated by admin' : 'Account suspended by admin', u.name, wasSuspended ? 'success' : 'warn');
-    adminFilterUsers();
-    // Update KPI
-    var kpis = document.querySelectorAll('.admin-kpi-value');
-    if (kpis[1]) kpis[1].textContent = ADMIN_MOCK_USERS.filter(function(x){return x.status==='active';}).length;
-    if (kpis[2]) kpis[2].textContent = ADMIN_MOCK_USERS.filter(function(x){return x.status==='suspended';}).length;
-    // Update security count
-    umUpdateSecurityCount();
-    umShowToast(wasSuspended ? '✅' : '🚫', wasSuspended ? u.name + ' account reactivated' : u.name + ' account suspended');
-    // If drawer is open for this user, refresh it
-    if (window._umDrawerUserId === id) { umOpenProfile(id); }
+    try {
+      await FA.adminToggleSuspend(id);
+      umAddAuditEntry(wasSuspended ? 'Reactivated Account' : 'Suspended Account', u.name, wasSuspended ? 'success' : 'warn');
+      umAddSecurityLog(wasSuspended ? 'Account reactivated by admin' : 'Account suspended by admin', u.name, wasSuspended ? 'success' : 'warn');
+      umShowToast(wasSuspended ? '✅' : '🚫', wasSuspended ? u.name + ' account reactivated' : u.name + ' account suspended');
+      // Reload live data and re-render
+      await window.adminRenderDashboard();
+      if (window._umDrawerUserId === id) { umOpenProfile(id); }
+    } catch(err) {
+      umShowToast('❌', 'Action failed: ' + (err.message || 'Unknown error'));
+    }
   };
 
   /* ─── STATS RIBBON ──────────────────────────────────────── */
   function umRenderStatsRibbon() {
     const el = document.getElementById('um-stats-ribbon');
     if (!el) return;
-    const total     = ADMIN_MOCK_USERS.length;
-    const active    = ADMIN_MOCK_USERS.filter(function(u){ return u.status === 'active'; }).length;
-    const suspended = ADMIN_MOCK_USERS.filter(function(u){ return u.status === 'suspended'; }).length;
-    const pending   = ADMIN_MOCK_USERS.filter(function(u){ return u.status === 'pending'; }).length;
+    const total     = _LIVE_USERS.length;
+    const active    = _LIVE_USERS.filter(function(u){ return u.status === 'active'; }).length;
+    const suspended = _LIVE_USERS.filter(function(u){ return u.status === 'suspended'; }).length;
+    const pending   = _LIVE_USERS.filter(function(u){ return u.status === 'pending'; }).length;
     el.innerHTML = [
       { icon:'👥', value: total,     label:'Total Users' },
       { icon:'✅', value: active,    label:'Active' },
@@ -2894,7 +3153,7 @@
   /* ─── EXPORT ──────────────────────────────────────────────── */
   window.umExportUsers = function() {
     var rows = ['ID,Name,Email,Phone,Status,Investments,Joined'];
-    ADMIN_MOCK_USERS.forEach(function(u) {
+    _LIVE_USERS.forEach(function(u) {
       rows.push([u.id, u.name, u.email, u.phone, u.status, u.investments, u.joined].join(','));
     });
     var blob = new Blob([rows.join('\n')], { type: 'text/csv' });
@@ -2910,7 +3169,7 @@
   window._umDeleteTargetId = null;
 
   window.umOpenProfile = function(id) {
-    const u = ADMIN_MOCK_USERS.find(function(x){ return x.id === id; });
+    const u = _LIVE_USERS.find(function(x){ return x.id === id; });
     if (!u) return;
     window._umDrawerUserId = id;
     window._umDrawerMode = 'view';
@@ -2922,7 +3181,7 @@
   };
 
   window.umOpenEdit = function(id) {
-    const u = ADMIN_MOCK_USERS.find(function(x){ return x.id === id; });
+    const u = _LIVE_USERS.find(function(x){ return x.id === id; });
     if (!u) return;
     window._umDrawerUserId = id;
     window._umDrawerMode = 'edit';
@@ -2940,8 +3199,8 @@
   };
 
   function umBuildProfileHTML(u) {
-    var userTxns = ADMIN_MOCK_TXNS.filter(function(t){ return t.user === u.name; });
-    var userInvs = ADMIN_MOCK_INVS.filter(function(i){ return i.investor === u.name; });
+    var userTxns = _LIVE_TXNS.filter(function(t){ return t.user === u.name; });
+    var userInvs = _LIVE_INVS.filter(function(i){ return i.investor === u.name; });
     var totalInvested = userInvs.reduce(function(s,i){ return s + i.amount; }, 0);
     var statusLabel = u.status === 'pending' ? 'Pending KYC' : u.status.charAt(0).toUpperCase() + u.status.slice(1);
 
@@ -3047,7 +3306,7 @@
   }
 
   window.umSaveEdit = function(id) {
-    const u = ADMIN_MOCK_USERS.find(function(x){ return x.id === id; });
+    const u = _LIVE_USERS.find(function(x){ return x.id === id; });
     if (!u) return;
     const first   = (document.getElementById('um-edit-first').value  || '').trim();
     const last    = (document.getElementById('um-edit-last').value   || '').trim();
@@ -3071,7 +3330,7 @@
 
   /* ─── DELETE FLOW ────────────────────────────────────────── */
   window.umOpenDelete = function(id) {
-    const u = ADMIN_MOCK_USERS.find(function(x){ return x.id === id; });
+    const u = _LIVE_USERS.find(function(x){ return x.id === id; });
     if (!u) return;
     window._umDeleteTargetId = id;
     document.getElementById('um-delete-modal-name').textContent = u.name + ' (' + u.email + ')';
@@ -3081,21 +3340,26 @@
     document.getElementById('um-delete-modal-overlay').classList.remove('open');
     window._umDeleteTargetId = null;
   };
-  window.umConfirmDelete = function() {
+  window.umConfirmDelete = async function() {
     const id = window._umDeleteTargetId;
     if (!id) return;
-    const idx = ADMIN_MOCK_USERS.findIndex(function(x){ return x.id === id; });
-    if (idx === -1) return;
-    const uName = ADMIN_MOCK_USERS[idx].name;
-    umAddAuditEntry('Deleted User Account', uName, 'fail');
-    umAddSecurityLog('User account permanently deleted by admin', uName, 'fail');
-    ADMIN_MOCK_USERS.splice(idx, 1);
-    umCloseDeleteModal();
-    umCloseDrawer();
-    adminFilterUsers();
-    adminRenderDashboard();
-    umUpdateSecurityCount();
-    umShowToast('🗑️', uName + ' account deleted');
+    const u = _LIVE_USERS.find(function(x){ return x.id === id; });
+    if (!u) return;
+    const uName = u.name;
+    try {
+      // Delete profile from Supabase (requires admin RLS or service role)
+      await FA.adminDeleteUser(id);
+      umAddAuditEntry('Deleted User Account', uName, 'fail');
+      umAddSecurityLog('User account permanently deleted by admin', uName, 'fail');
+      umCloseDeleteModal();
+      umCloseDrawer();
+      umShowToast('🗑️', uName + ' account deleted');
+      await window.adminRenderDashboard();
+      umUpdateSecurityCount();
+    } catch(err) {
+      umCloseDeleteModal();
+      umShowToast('❌', 'Delete failed: ' + (err.message || 'Check Supabase RLS permissions'));
+    }
   };
 
   /* ─── TOAST ──────────────────────────────────────────────── */
@@ -3206,7 +3470,7 @@
     var patterns = [];
     // Group by user
     var byUser = {};
-    ADMIN_MOCK_TXNS.forEach(function(t) {
+    _LIVE_TXNS.forEach(function(t) {
       if (!byUser[t.user]) byUser[t.user] = [];
       byUser[t.user].push(t);
     });
@@ -3389,8 +3653,8 @@
   window.secFlagAccount = function(name, reason, severity) {
     var already = UM_FLAGGED_ACCOUNTS.find(function(f){ return f.name === name; });
     if (already) { umShowToast('⚠️', name + ' is already flagged'); return; }
-    // Find user details from ADMIN_MOCK_USERS or UM_RISK_DATA
-    var u = ADMIN_MOCK_USERS.find(function(x){ return x.name === name; });
+    // Find user details from _LIVE_USERS or UM_RISK_DATA
+    var u = _LIVE_USERS.find(function(x){ return x.name === name; });
     var color = u ? u.color : '#6B7280';
     var email = u ? u.email : name.toLowerCase().replace(' ','') + '@example.com';
     var newFlag = {
@@ -3485,7 +3749,7 @@
 
   window.secOpenActionPanel = function(name, context) {
     // context: 'suspicious' | 'risk' | 'flagged' | 'txn'
-    var u = ADMIN_MOCK_USERS.find(function(x){ return x.name === name; });
+    var u = _LIVE_USERS.find(function(x){ return x.name === name; });
     var color = (u && u.avatarColor) || '#6B7280';
     var email = (u && u.email) || '';
     var isSuspended  = u && u.status === 'suspended';
@@ -3569,40 +3833,46 @@
   };
 
   /* ── Action: Suspend / Reactivate ─────────────────────────── */
-  window.secApSuspend = function() {
+  window.secApSuspend = async function() {
     var name = _secApTargetName;
-    var u = ADMIN_MOCK_USERS.find(function(x){ return x.name === name; });
+    var u = _LIVE_USERS.find(function(x){ return x.name === name; });
     if (!u) return;
-    u.status = 'suspended';
-    umAddAuditEntry('Suspended Account', name, 'warn');
-    umAddSecurityLog('<strong>' + name + '</strong> suspended by admin via security panel', name, 'warn');
-    adminFilterUsers();
-    adminRenderDashboard();
-    umUpdateSecurityCount();
-    secRenderSubpanel(_secActiveTab);
-    secCloseActionPanel();
-    umShowToast('🚫', name + ' has been suspended');
+    try {
+      await FA.adminToggleSuspend(u.id);
+      umAddAuditEntry('Suspended Account', name, 'warn');
+      umAddSecurityLog('<strong>' + name + '</strong> suspended by admin via security panel', name, 'warn');
+      secCloseActionPanel();
+      umShowToast('🚫', name + ' has been suspended');
+      await window.adminRenderDashboard();
+      secRenderSubpanel(_secActiveTab);
+      umUpdateSecurityCount();
+    } catch(err) {
+      umShowToast('❌', 'Failed: ' + (err.message || 'Unknown error'));
+    }
   };
 
-  window.secApReactivate = function() {
+  window.secApReactivate = async function() {
     var name = _secApTargetName;
-    var u = ADMIN_MOCK_USERS.find(function(x){ return x.name === name; });
+    var u = _LIVE_USERS.find(function(x){ return x.name === name; });
     if (!u) return;
-    u.status = 'active';
-    umAddAuditEntry('Reactivated Account', name, 'success');
-    umAddSecurityLog('<strong>' + name + '</strong> account reactivated by admin', name, 'success');
-    adminFilterUsers();
-    adminRenderDashboard();
-    umUpdateSecurityCount();
-    secRenderSubpanel(_secActiveTab);
-    secCloseActionPanel();
-    umShowToast('✅', name + ' account reactivated');
+    try {
+      await FA.adminToggleSuspend(u.id);
+      umAddAuditEntry('Reactivated Account', name, 'success');
+      umAddSecurityLog('<strong>' + name + '</strong> account reactivated by admin', name, 'success');
+      secCloseActionPanel();
+      umShowToast('✅', name + ' account reactivated');
+      await window.adminRenderDashboard();
+      secRenderSubpanel(_secActiveTab);
+      umUpdateSecurityCount();
+    } catch(err) {
+      umShowToast('❌', 'Failed: ' + (err.message || 'Unknown error'));
+    }
   };
 
   /* ── Action: Restrict / Unrestrict ───────────────────────── */
   window.secApToggleRestrict = function() {
     var name = _secApTargetName;
-    var u = ADMIN_MOCK_USERS.find(function(x){ return x.name === name; });
+    var u = _LIVE_USERS.find(function(x){ return x.name === name; });
     if (!u) return;
     u.restricted = !u.restricted;
     var action = u.restricted ? 'Restricted Account' : 'Lifted Restriction';
@@ -3620,7 +3890,7 @@
   /* ── Action: Warn (WhatsApp-style) ────────────────────────── */
   window.secApWarn = function() {
     var name = _secApTargetName;
-    var u = ADMIN_MOCK_USERS.find(function(x){ return x.name === name; });
+    var u = _LIVE_USERS.find(function(x){ return x.name === name; });
     if (!u) return;
     u.warnings = (u.warnings || 0) + 1;
     var warnMsg = 'FarmAlly Admin Notice: Your account has been flagged for suspicious activity. '
@@ -3640,7 +3910,7 @@
   /* ── Action: View Activity (opens profile drawer) ──────────── */
   window.secApViewActivity = function() {
     var name = _secApTargetName;
-    var u = ADMIN_MOCK_USERS.find(function(x){ return x.name === name; });
+    var u = _LIVE_USERS.find(function(x){ return x.name === name; });
     secCloseActionPanel();
     if (u) {
       setTimeout(function() { window.umOpenProfile(u.id); }, 180);
@@ -3667,8 +3937,8 @@
       var fails     = UM_SECURITY_LOG.filter(function(l){ return l.type==='fail';    }).length;
       var warnings  = UM_SECURITY_LOG.filter(function(l){ return l.type==='warn';    }).length;
       var highRisk  = UM_RISK_DATA.filter(function(r){ return r.risk==='high'; }).length;
-      var suspended = ADMIN_MOCK_USERS.filter(function(u){ return u.status==='suspended'; }).length;
-      var pending   = ADMIN_MOCK_USERS.filter(function(u){ return u.status==='pending';   }).length;
+      var suspended = _LIVE_USERS.filter(function(u){ return u.status==='suspended'; }).length;
+      var pending   = _LIVE_USERS.filter(function(u){ return u.status==='pending';   }).length;
       kpiEl.innerHTML = [
         { icon:'✅', bg:'#ECFDF5', label:'Successful Logins',   value: logins,    sub:'Last 7 days' },
         { icon:'🚫', bg:'#FEF2F2', label:'Failed Attempts',     value: fails,     sub:'Last 7 days' },
@@ -3707,7 +3977,107 @@
     umUpdateSecurityCount();
   });
 
-  /* ─── TRANSACTIONS TABLE ──────────────────────────────────── */
+  /* ─── WITHDRAWALS TABLE ───────────────────────────────────── */
+  var _wdData = [];
+  var _wdFilter = 'pending';
+
+  window.adminLoadWithdrawals = async function() {
+    const tbody = document.getElementById('admin-wd-tbody');
+    if (tbody) tbody.innerHTML = '<tr><td colspan="6"><div class="admin-empty">Loading…</div></td></tr>';
+    try {
+      const { data, error } = await FA.supabase.from('withdrawal_requests')
+        .select('*, profiles(full_name), bank_accounts(bank_name, account_number, account_name)')
+        .order('created_at', { ascending: false });
+      if (error) throw error;
+      _wdData = data || [];
+    } catch (e) {
+      if (tbody) tbody.innerHTML = '<tr><td colspan="6"><div class="admin-empty">Couldn\'t load withdrawal requests: ' + (e.message || 'unknown error') + '</div></td></tr>';
+      return;
+    }
+    const pendingCount = _wdData.filter(function(w){ return w.status === 'pending'; }).length;
+    const countEl = document.getElementById('admin-withdrawals-count');
+    if (countEl) countEl.textContent = pendingCount;
+    adminRenderWdTable();
+  };
+
+  window.adminSetWdFilter = function(filter, btn) {
+    _wdFilter = filter;
+    document.querySelectorAll('#admin-panel-withdrawals .admin-filter-pill').forEach(function(b) { b.classList.remove('active'); });
+    if (btn) btn.classList.add('active');
+    adminRenderWdTable();
+  };
+
+  function adminRenderWdTable() {
+    const tbody = document.getElementById('admin-wd-tbody');
+    if (!tbody) return;
+    const rows = _wdFilter === 'all' ? _wdData : _wdData.filter(function(w){ return w.status === _wdFilter; });
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="6"><div class="admin-empty"><div class="admin-empty-icon">🏦</div>No withdrawal requests here.</div></td></tr>';
+      return;
+    }
+    const statusColors = { pending:'#FEF3C7', paid:'#D1FAE5', rejected:'#FEE2E2' };
+    const statusText   = { pending:'#92400E', paid:'#065F46', rejected:'#991B1B' };
+    tbody.innerHTML = rows.map(function(w) {
+      const userName = (w.profiles && w.profiles.full_name) || 'Unknown user';
+      const bank = w.bank_accounts;
+      const dest = bank ? (bank.bank_name + ' ****' + String(bank.account_number).slice(-4) + ' · ' + bank.account_name) : 'Account deleted';
+      const date = new Date(w.created_at).toLocaleDateString('en-NG', { day:'numeric', month:'short', year:'numeric' });
+      const actions = w.status === 'pending'
+        ? '<button class="admin-btn-sm" style="background:#1B4332;color:#fff;margin-right:6px;" onclick="adminMarkWithdrawalPaid(\'' + w.id + '\')">Mark Paid</button>'
+        + '<button class="admin-btn-sm" style="background:#FEE2E2;color:#991B1B;" onclick="adminRejectWithdrawal(\'' + w.id + '\')">Reject</button>'
+        : '<span style="font-size:12px;color:#9CA3AF;">' + (w.admin_note || '—') + '</span>';
+      return '<tr>'
+        + '<td style="font-size:13px;">' + userName + '</td>'
+        + '<td style="font-family:Sora,sans-serif;font-weight:800;font-size:14px;">' + fmtNaira(w.amount_kobo) + '</td>'
+        + '<td style="font-size:13px;">' + dest + '</td>'
+        + '<td style="font-size:12px;color:#6B7280;">' + date + '</td>'
+        + '<td><span style="font-size:11px;font-weight:700;padding:3px 10px;border-radius:99px;background:' + statusColors[w.status] + ';color:' + statusText[w.status] + ';">' + w.status + '</span></td>'
+        + '<td>' + actions + '</td>'
+        + '</tr>';
+    }).join('');
+  }
+
+  window.adminMarkWithdrawalPaid = async function(id) {
+    if (!confirm('Confirm you have already sent this payment from your bank app? This marks the request as paid.')) return;
+    try {
+      const { error } = await FA.supabase.from('withdrawal_requests')
+        .update({ status: 'paid', processed_at: new Date().toISOString() })
+        .eq('id', id);
+      if (error) throw error;
+      await adminLoadWithdrawals();
+    } catch (e) {
+      alert('Failed to update: ' + (e.message || 'unknown error'));
+    }
+  };
+
+  window.adminRejectWithdrawal = async function(id) {
+    const reason = prompt('Reason for rejecting this withdrawal? (shown to the user, and the funds will be returned to their wallet)');
+    if (reason === null) return; // cancelled
+    try {
+      const w = _wdData.find(function(x){ return x.id === id; });
+      if (!w) throw new Error('Request not found — please refresh and try again.');
+
+      // Refund the reserved funds back to the user's wallet, since
+      // FA.withdraw() already debited them at request time.
+      const { error: refundErr } = await FA.supabase.rpc('credit_wallet', {
+        target_user_id: w.user_id,
+        amount_kobo: w.amount_kobo,
+        reference: (w.wallet_reference || id) + '-REFUND',
+        description: 'Withdrawal rejected — funds returned',
+      });
+      if (refundErr) throw refundErr;
+
+      const { error } = await FA.supabase.from('withdrawal_requests')
+        .update({ status: 'rejected', processed_at: new Date().toISOString(), admin_note: reason || 'Rejected by admin' })
+        .eq('id', id);
+      if (error) throw error;
+      await adminLoadWithdrawals();
+    } catch (e) {
+      alert('Failed to reject: ' + (e.message || 'unknown error'));
+    }
+  };
+
+
   var _activeTxnFilter = 'all';
   function adminRenderTxnsTable(txns) {
     const tbody = document.getElementById('admin-txns-tbody');
@@ -3735,7 +4105,7 @@
   };
   window.adminFilterTxns = function() {
     const q = (document.getElementById('admin-txns-search') && document.getElementById('admin-txns-search').value || '').toLowerCase();
-    let filtered = ADMIN_MOCK_TXNS;
+    let filtered = _LIVE_TXNS;
     if (_activeTxnFilter !== 'all') filtered = filtered.filter(function(t){ return t.type === _activeTxnFilter; });
     if (q) filtered = filtered.filter(function(t){ return t.user.toLowerCase().includes(q) || t.cat.toLowerCase().includes(q) || t.id.toLowerCase().includes(q); });
     adminRenderTxnsTable(filtered);
@@ -3781,36 +4151,77 @@
   var ECOM_NEXT_ID  = 200;
 
   function ecomBootstrap() {
-    // Pull from marketplace arrays if they exist
-    var base = [];
-    if (typeof ALL_PRODUCTS !== 'undefined') base = base.concat(ALL_PRODUCTS);
-    if (typeof PG_PRODUCTS  !== 'undefined') base = base.concat(PG_PRODUCTS);
-    ECOM_PRODUCTS = base.map(function(p) {
-      return Object.assign({
-        featured: false,
-        hidden: false,
-        adminStatus: 'approved',
-        submittedBy: null,
-        submittedAt: null,
-        rejectionReason: null,
-      }, p, {
-        stockQty: p.inStock ? (Math.floor(Math.random()*80)+5) : 0,
-        imageUrl: null
-      });
-    });
-    if (!ECOM_PRODUCTS.length) {
-      ECOM_PRODUCTS = [
-        { id:200, name:'Premium Ofada Rice', farm:'GreenAcres Farm', loc:'Kebbi State', cat:'food', subcat:'grain', emoji:'🌾', price:4500, origPrice:null, unit:'5kg', rating:4.8, reviews:124, badge:'Best Seller', badgeClass:'green', tags:['Organic','Gluten-Free'], verified:true, inStock:true, stockQty:42, imageUrl:null, featured:true,  hidden:false, adminStatus:'approved' },
-        { id:201, name:'Fresh Catfish', farm:'BlueTide Aquafarm', loc:'Delta State', cat:'food', subcat:'fish', emoji:'🐟', price:2800, origPrice:3200, unit:'kg', rating:4.7, reviews:213, badge:'Sale', badgeClass:'amber', tags:['Fresh','Traceable'], verified:true, inStock:true, stockQty:18, imageUrl:null, featured:false, hidden:false, adminStatus:'approved' },
-        { id:202, name:'NPK Fertilizer', farm:'AgriSupply NG', loc:'Abuja FCT', cat:'inputs', subcat:'fertilizer', emoji:'🧪', price:22000, origPrice:null, unit:'50kg bag', rating:4.6, reviews:89, badge:'Best Value', badgeClass:'green', tags:['Compound'], verified:true, inStock:true, stockQty:8, imageUrl:null, featured:false, hidden:false, adminStatus:'approved' },
-        { id:203, name:'Maize Hybrid Seed', farm:'SeedMaster NG', loc:'Kaduna State', cat:'inputs', subcat:'seeds', emoji:'🌽', price:12500, origPrice:14000, unit:'5kg', rating:4.7, reviews:67, badge:'Sale', badgeClass:'amber', tags:['High-yield'], verified:true, inStock:false, stockQty:0, imageUrl:null, featured:false, hidden:false, adminStatus:'approved' },
-        { id:204, name:'Honey Raw Unfiltered', farm:'BeeMaster Farms', loc:'Oyo State', cat:'food', subcat:'sweetener', emoji:'🍯', price:6500, origPrice:null, unit:'500ml jar', rating:0, reviews:0, badge:null, badgeClass:'green', tags:['Raw','Natural'], verified:false, inStock:true, stockQty:30, imageUrl:null, featured:false, hidden:false, adminStatus:'pending', submittedBy:'Bello Afolabi', submittedAt:'2025-06-08' },
-        { id:205, name:'Broiler Day-Old Chicks', farm:'PrimePoul Hatchery', loc:'Kano State', cat:'livestock', subcat:'poultry', emoji:'🐣', price:850, origPrice:null, unit:'per chick', rating:0, reviews:0, badge:null, badgeClass:'green', tags:['Vaccinated','NAFDAC'], verified:false, inStock:true, stockQty:500, imageUrl:null, featured:false, hidden:false, adminStatus:'pending', submittedBy:'Ibrahim Yusuf', submittedAt:'2025-06-09' },
-        { id:206, name:'Cassava Flour (Grade A)', farm:'AgroProcess NG', loc:'Benue State', cat:'food', subcat:'flour', emoji:'🌿', price:1800, origPrice:2100, unit:'kg', rating:0, reviews:0, badge:null, badgeClass:'amber', tags:['Grade A','Dried'], verified:false, inStock:true, stockQty:0, imageUrl:null, featured:false, hidden:false, adminStatus:'rejected', submittedBy:'Chioma Obi', submittedAt:'2025-06-05', rejectionReason:'Insufficient supplier documentation' },
-      ];
-    }
-    ECOM_NEXT_ID = Math.max.apply(null, ECOM_PRODUCTS.map(function(p){return p.id;})) + 1;
+    // Stub — actual loading done by ecomLoadFromSupabase()
+    // Keep ECOM_PRODUCTS empty until async load completes
   }
+
+  async function ecomLoadFromSupabase() {
+    try {
+      const [products, orders] = await Promise.all([
+        FA.adminGetProducts(),
+        FA.adminGetAllOrders(),
+      ]);
+
+      if (products && products.length > 0) {
+        ECOM_PRODUCTS = products.map(function(p) {
+          return {
+            id:          p.id,
+            name:        p.name,
+            farm:        p.farm_name || (p.categories && p.categories.name) || '',
+            loc:         p.location || '',
+            cat:         (p.categories && p.categories.slug) || 'food',
+            subcat:      p.subcategory || '',
+            emoji:       p.emoji || '🌾',
+            price:       (p.price_kobo || 0) / 100,
+            origPrice:   p.original_price_kobo ? p.original_price_kobo / 100 : null,
+            unit:        p.unit || 'item',
+            rating:      p.rating || 0,
+            reviews:     p.review_count || 0,
+            badge:       p.badge || null,
+            badgeClass:  p.badge_class || 'green',
+            tags:        p.tags || [],
+            verified:    p.is_active,
+            inStock:     (p.stock_quantity || 0) > 0,
+            stockQty:    p.stock_quantity || 0,
+            imageUrl:    p.image_url || null,
+            featured:    p.is_featured || false,
+            hidden:      !p.is_active,
+            adminStatus: p.is_active ? 'approved' : 'pending',
+            description: p.description || '',
+          };
+        });
+        ECOM_NEXT_ID = Date.now();
+      }
+
+      if (orders && orders.length > 0) {
+        ECOM_ORDERS = orders.map(function(o) {
+          return {
+            id:           (o.id || '').substring(0,8).toUpperCase(),
+            customer:     o.full_name || o.customer_name || '—',
+            phone:        o.phone || '—',
+            address:      o.delivery_address || '—',
+            items:        o.items || [],
+            total:        (o.total_kobo || 0) / 100,
+            status:       o.status || 'pending',
+            date:         new Date(o.created_at).toLocaleDateString('en-NG', { year:'numeric', month:'short', day:'numeric' }),
+            trackingNote: o.tracking_note || '',
+            trackingHistory: o.tracking_history || [],
+          };
+        });
+      }
+
+      ecomRenderProducts();
+      ecomRenderOrders();
+      ecomRenderInventory();
+      ecomRenderSubmissions();
+      ecomUpdateSubmissionsBadge();
+    } catch(err) {
+      console.warn('[Admin Ecom] Live load failed:', err.message);
+      // Leave empty arrays — UI shows "No products yet" / "No orders yet"
+    }
+  }
+
+  var ECOM_ORDERS = [];
 
   var ECOM_CATEGORIES = [
     { id:'food',       name:'Food Products',  emoji:'🥬', desc:'Fresh produce, grains, protein & more', count:0 },
@@ -3820,17 +4231,6 @@
   ];
   var ECOM_CAT_NEXT_ID = 5;
 
-  var ECOM_ORDERS = [
-    { id:'ORD-001', customer:'Adaeze Okonkwo', phone:'08012345678', address:'15 Maitama Crescent, Abuja', items:[{name:'Premium Ofada Rice',qty:2,price:4500},{name:'Fresh Catfish',qty:3,price:2800}], total:17400, status:'delivered', date:'2025-05-30', trackingNote:'Delivered to gate. Signed by resident.', trackingHistory:[{status:'pending',time:'30 May, 09:00',note:'Order placed'},{status:'confirmed',time:'30 May, 09:45',note:'Payment confirmed'},{status:'shipped',time:'30 May, 14:00',note:'Dispatched from Abuja hub'},{status:'delivered',time:'30 May, 17:30',note:'Delivered to gate. Signed by resident.'}] },
-    { id:'ORD-002', customer:'Emeka Nwosu',    phone:'08098765432', address:'22 Admiralty Way, Lekki',   items:[{name:'NPK Fertilizer',qty:1,price:22000}], total:22000, status:'shipped',   date:'2025-06-01', trackingNote:'In transit via GIG Logistics', trackingHistory:[{status:'pending',time:'1 Jun, 10:00',note:'Order placed'},{status:'confirmed',time:'1 Jun, 11:00',note:'Payment verified'},{status:'shipped',time:'1 Jun, 15:30',note:'In transit via GIG Logistics'}] },
-    { id:'ORD-003', customer:'Funmi Adesanya', phone:'07055554444', address:'4 Allen Ave, Ikeja',        items:[{name:'Maize Hybrid Seed',qty:2,price:12500}], total:25000, status:'confirmed', date:'2025-06-03', trackingNote:'', trackingHistory:[{status:'pending',time:'3 Jun, 08:00',note:'Order placed'},{status:'confirmed',time:'3 Jun, 09:15',note:'Payment confirmed, awaiting dispatch'}] },
-    { id:'ORD-004', customer:'Tobi Lawal',     phone:'08066667777', address:'7 Ring Road, Ibadan',       items:[{name:'Fresh Catfish',qty:5,price:2800},{name:'Premium Ofada Rice',qty:1,price:4500}], total:18500, status:'pending',   date:'2025-06-05', trackingNote:'', trackingHistory:[{status:'pending',time:'5 Jun, 12:00',note:'Order placed, awaiting confirmation'}] },
-    { id:'ORD-005', customer:'Ngozi Eze',      phone:'09011112222', address:'3 Trans Amadi, Port Harcourt', items:[{name:'NPK Fertilizer',qty:2,price:22000}], total:44000, status:'cancelled', date:'2025-06-02', trackingNote:'Cancelled by customer — payment failed', trackingHistory:[{status:'pending',time:'2 Jun, 07:00',note:'Order placed'},{status:'cancelled',time:'2 Jun, 07:30',note:'Cancelled by customer — payment failed'}] },
-    { id:'ORD-006', customer:'Chidi Obi',      phone:'08133334444', address:'10 Wuse Zone 6, Abuja',    items:[{name:'Maize Hybrid Seed',qty:1,price:12500}], total:12500, status:'delivered', date:'2025-05-28', trackingNote:'Delivered and confirmed by customer', trackingHistory:[{status:'pending',time:'28 May, 08:30',note:'Order placed'},{status:'confirmed',time:'28 May, 09:00',note:'Confirmed'},{status:'shipped',time:'28 May, 11:00',note:'Dispatched'},{status:'delivered',time:'28 May, 16:00',note:'Delivered and confirmed by customer'}] },
-    { id:'ORD-007', customer:'Kemi Adeyemi',   phone:'07077778888', address:'55 Oregun Rd, Ikeja',      items:[{name:'Fresh Catfish',qty:2,price:2800},{name:'NPK Fertilizer',qty:1,price:22000}], total:27600, status:'pending', date:'2025-06-06', trackingNote:'', trackingHistory:[{status:'pending',time:'6 Jun, 07:15',note:'Order placed'}] },
-    { id:'ORD-008', customer:'Adaeze Okonkwo', phone:'08012345678', address:'15 Maitama Crescent, Abuja', items:[{name:'NPK Fertilizer',qty:1,price:22000}], total:22000, status:'delivered', date:'2025-05-10', trackingNote:'Previous order, delivered fine', trackingHistory:[{status:'pending',time:'10 May'},{status:'delivered',time:'11 May',note:'Delivered'}] },
-    { id:'ORD-009', customer:'Adaeze Okonkwo', phone:'08012345678', address:'15 Maitama Crescent, Abuja', items:[{name:'Maize Hybrid Seed',qty:1,price:12500}], total:12500, status:'confirmed', date:'2025-06-07', trackingNote:'', trackingHistory:[{status:'pending',time:'7 Jun, 08:00',note:'Order placed'},{status:'confirmed',time:'7 Jun, 09:00',note:'Confirmed'}] },
-  ];
 
   var _ecomActiveOrderFilter  = 'all';
   var _ecomDeleteTarget       = null;
@@ -3854,8 +4254,10 @@
   };
 
   /* ── Main render entry ─────────────────────────────────── */
-  window.adminRenderEcommerce = function() {
-    ecomBootstrap();
+  window.adminRenderEcommerce = async function() {
+    ecomBootstrap(); // no-op stub, keeps call site clean
+    // Load live products and orders from Supabase, then re-render
+    await ecomLoadFromSupabase();
     ecomUpdateCategoryCounts();
     ecomRenderKPIs();
     ecomRenderProducts();
@@ -4061,22 +4463,21 @@
   };
 
   /* ── Approve Product ─────────────────────────────────── */
-  window.ecomApproveProduct = function(id) {
+  window.ecomApproveProduct = async function(id) {
     var p = ECOM_PRODUCTS.find(function(x){ return x.id === id; });
     if (!p) return;
-    p.adminStatus    = 'approved';
-    p.rejectionReason = null;
-    p.verified        = true;
-    // Push to marketplace if it isn't there already
-    if (typeof ALL_PRODUCTS !== 'undefined') {
-      var exists = ALL_PRODUCTS.find(function(x){ return x.id === id; });
-      if (!exists) ALL_PRODUCTS.push(p);
-      else Object.assign(exists, { adminStatus:'approved', verified:true });
+    try {
+      await FA.adminSaveProduct({ id: id, is_active: true });
+      p.adminStatus     = 'approved';
+      p.rejectionReason = null;
+      p.verified        = true;
+      ecomRenderProducts();
+      ecomRenderSubmissions();
+      ecomUpdateSubmissionsBadge();
+      _ecomToast('✅', '"' + p.name + '" approved and is now live');
+    } catch(err) {
+      _ecomToast('❌', 'Approve failed: ' + (err.message || 'Unknown error'));
     }
-    ecomRenderProducts();
-    ecomRenderSubmissions();
-    ecomUpdateSubmissionsBadge();
-    _ecomToast('✅', '"' + p.name + '" approved and is now live');
   };
 
   /* ── Open Reject Modal ───────────────────────────────── */
@@ -4099,7 +4500,7 @@
     _ecomRejectTargetId = null;
   };
 
-  window.ecomConfirmReject = function() {
+  window.ecomConfirmReject = async function() {
     if (_ecomRejectTargetId === null) return;
     var reason = (document.getElementById('ecom-reject-reason').value || '').trim();
     if (!reason) {
@@ -4107,21 +4508,21 @@
       return;
     }
     var p = ECOM_PRODUCTS.find(function(x){ return x.id === _ecomRejectTargetId; });
-    if (p) {
-      p.adminStatus     = 'rejected';
-      p.rejectionReason = reason;
-      p.verified        = false;
-      // Remove from marketplace if present
-      if (typeof ALL_PRODUCTS !== 'undefined') {
-        var ai = ALL_PRODUCTS.findIndex(function(x){ return x.id === _ecomRejectTargetId; });
-        if (ai >= 0) ALL_PRODUCTS.splice(ai, 1);
+    try {
+      await FA.adminSaveProduct({ id: _ecomRejectTargetId, is_active: false });
+      if (p) {
+        p.adminStatus     = 'rejected';
+        p.rejectionReason = reason;
+        p.verified        = false;
       }
+      ecomCloseRejectModal();
+      ecomRenderProducts();
+      ecomRenderSubmissions();
+      ecomUpdateSubmissionsBadge();
+      _ecomToast('❌', '"' + (p ? p.name : 'Product') + '" rejected');
+    } catch(err) {
+      _ecomToast('❌', 'Reject failed: ' + (err.message || 'Unknown error'));
     }
-    ecomCloseRejectModal();
-    ecomRenderProducts();
-    ecomRenderSubmissions();
-    ecomUpdateSubmissionsBadge();
-    _ecomToast('❌', '"' + (p ? p.name : 'Product') + '" rejected');
   };
 
   /* ── Submissions Renderer ────────────────────────────── */
@@ -5131,19 +5532,277 @@
     _origAdminSwitchTab(name, clickedBtn);
     if (name === 'ecommerce') { window.adminRenderEcommerce(); }
   };
-  var _origPanelNames = ['overview','users','transactions','investments','activity','security'];
-  var _origAdminSwitchTabByName = window.adminSwitchTabByName;
-  window.adminSwitchTabByName = function(name) {
-    var allPanels = _origPanelNames.concat(['ecommerce']);
-    var tabs = document.querySelectorAll('.admin-tab');
-    var idx = allPanels.indexOf(name);
-    if (idx >= 0) window.adminSwitchTab(name, tabs[idx]);
-  };
+  // Note: adminSwitchTabByName already includes 'ecommerce' in its panelNames
+  // array (fixed at source), so no patch is needed here.
 
   /* ── Init on DOMContentLoaded ─────────────────────────── */
   document.addEventListener('DOMContentLoaded', function() {
-    ecomBootstrap();
+    // ecomLoadFromSupabase() is called lazily by adminRenderEcommerce()
+    // when the admin clicks the ecommerce tab — no eager init needed.
   });
+
+  /* ══════════════════════════════════════════════════════════════
+     INVESTMENT LISTINGS CRUD
+     Writes directly to the farm_listings table in Supabase using
+     the service-level FA.supabase client (the admin is already
+     authenticated via Supabase session by the time they're here).
+  ══════════════════════════════════════════════════════════════ */
+  (function() {
+    var _listings = [];
+    var _closingId = null;
+
+    // ── Type label helpers ───────────────────────────────────
+    var TYPE_LABELS = {
+      commodity_trading: 'Commodity Trading',
+      crop_farming:      'Crop Farming',
+      aquaculture:       'Fishery',
+      poultry:           'Poultry',
+      livestock:         'Livestock',
+      agribusiness:      'Agribusiness',
+    };
+
+    // ── Format helpers ───────────────────────────────────────
+    function fmt(kobo) {
+      var n = kobo / 100;
+      if (n >= 1e9) return '₦' + (n/1e9).toFixed(1) + 'B';
+      if (n >= 1e6) return '₦' + (n/1e6).toFixed(1) + 'M';
+      if (n >= 1e3) return '₦' + (n/1e3).toFixed(0) + 'K';
+      return '₦' + n.toLocaleString();
+    }
+
+    // ── Load all listings from Supabase ──────────────────────
+    window.listingsLoad = async function() {
+      var tbody = document.getElementById('listings-tbody');
+      if (!tbody) return;
+      tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:24px;color:#9CA3AF;">Loading…</td></tr>';
+      try {
+        var res = await FA.supabase
+          .from('farm_listings')
+          .select('id,name,type,location,emoji,roi_percent,risk_level,duration_months,min_investment_kobo,max_investment_kobo,total_slots,filled_slots,status,is_featured,funding_target_kobo')
+          .order('created_at', { ascending: false });
+        if (res.error) throw res.error;
+        _listings = res.data || [];
+        var countEl = document.getElementById('admin-listings-count');
+        if (countEl) countEl.textContent = _listings.length;
+        listingsRender();
+      } catch(e) {
+        tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:24px;color:#DC3545;">Failed to load: ' + e.message + '</td></tr>';
+      }
+    };
+
+    // ── Render the table ─────────────────────────────────────
+    function listingsRender() {
+      var tbody = document.getElementById('listings-tbody');
+      if (!tbody) return;
+      if (!_listings.length) {
+        tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:40px 24px;color:#9CA3AF;">' +
+          '<div style="font-size:36px;margin-bottom:8px;">📋</div>' +
+          '<div style="font-weight:700;color:#374151;margin-bottom:4px;">No listings yet</div>' +
+          '<div style="font-size:12px;">Click "Add Listing" to create your first one</div>' +
+          '</td></tr>';
+        return;
+      }
+      tbody.innerHTML = _listings.map(function(l) {
+        var slotPrice = l.total_slots > 0 ? Math.round(l.funding_target_kobo / l.total_slots) : l.min_investment_kobo;
+        var minSlots  = slotPrice > 0 ? Math.round(l.min_investment_kobo / slotPrice) : '—';
+        var pillClass = 'listings-status-' + (l.status || 'active');
+        var statusLabel = (l.status || 'active').charAt(0).toUpperCase() + (l.status || 'active').slice(1);
+        return '<tr>' +
+          '<td style="font-weight:600;color:#111827;">' + (l.emoji||'🌾') + ' ' + l.name + (l.is_featured ? ' <span style="background:#FEF9C3;color:#854D0E;font-size:10px;font-weight:700;padding:1px 5px;border-radius:4px;margin-left:4px;">★ Featured</span>' : '') + '</td>' +
+          '<td style="color:#6B7280;">' + (TYPE_LABELS[l.type] || l.type) + '</td>' +
+          '<td style="color:#6B7280;">' + (l.location||'—') + '</td>' +
+          '<td style="color:#111827;font-weight:600;">' + fmt(slotPrice) + '</td>' +
+          '<td style="color:#111827;">' + minSlots + '</td>' +
+          '<td style="color:#6B7280;">' + (l.duration_months||'—') + ' mo</td>' +
+          '<td style="color:#2D6A4F;font-weight:700;">' + (l.roi_percent||0) + '%</td>' +
+          '<td><span class="listings-status-pill ' + pillClass + '">' + statusLabel + '</span></td>' +
+          '<td style="white-space:nowrap;">' +
+            '<button onclick="listingsOpenModal(\'' + l.id + '\')" style="font-size:11px;font-weight:700;background:#EFF6FF;color:#2563EB;border:none;border-radius:6px;padding:4px 10px;cursor:pointer;margin-right:4px;">Edit</button>' +
+            (l.status !== 'closed' ?
+              '<button onclick="listingsOpenCloseModal(\'' + l.id + '\')" style="font-size:11px;font-weight:700;background:#FEE2E2;color:#DC3545;border:none;border-radius:6px;padding:4px 10px;cursor:pointer;">Close</button>'
+            : '<button onclick="listingsDelete(\'' + l.id + '\')" style="font-size:11px;font-weight:700;background:#F3F4F6;color:#6B7280;border:none;border-radius:6px;padding:4px 10px;cursor:pointer;">Delete</button>') +
+          '</td>' +
+        '</tr>';
+      }).join('');
+    }
+
+    // ── Preview recalculation (inside modal) ─────────────────
+    window.listingsRecalcPreview = function() {
+      var price     = Number(document.getElementById('lmodal-slotprice').value)  || 0;
+      var minSlots  = Number(document.getElementById('lmodal-minslots').value)   || 0;
+      var totalSlots= Number(document.getElementById('lmodal-totalslots').value) || 0;
+      var preview   = document.getElementById('lmodal-preview');
+      if (!preview) return;
+      preview.textContent =
+        'Minimum investment: ₦' + (price * minSlots).toLocaleString() +
+        ' · Total deal size: ₦' + (price * totalSlots).toLocaleString();
+    };
+
+    // ── Open add/edit modal ──────────────────────────────────
+    window.listingsOpenModal = function(id) {
+      var listing = id ? _listings.find(function(l){ return l.id === id; }) : null;
+      var slotPrice = 0;
+      if (listing && listing.total_slots > 0) {
+        slotPrice = Math.round(listing.funding_target_kobo / listing.total_slots);
+      } else if (listing) {
+        slotPrice = listing.min_investment_kobo;
+      }
+      var minSlots  = (slotPrice > 0 && listing) ? Math.round(listing.min_investment_kobo / slotPrice) : 5;
+      var totalSlots= (listing && listing.total_slots) || 50;
+
+      document.getElementById('lmodal-id').value           = listing ? listing.id : '';
+      document.getElementById('lmodal-name').value         = listing ? listing.name : '';
+      document.getElementById('lmodal-type').value         = listing ? (listing.type || 'commodity_trading') : 'commodity_trading';
+      document.getElementById('lmodal-location').value     = listing ? (listing.location || '') : '';
+      document.getElementById('lmodal-risk').value         = listing ? (listing.risk_level || 'medium') : 'medium';
+      document.getElementById('lmodal-duration').value     = listing ? (listing.duration_months || '') : '';
+      document.getElementById('lmodal-roi').value          = listing ? (listing.roi_percent || '') : '';
+      document.getElementById('lmodal-emoji').value        = listing ? (listing.emoji || '🌾') : '🌾';
+      document.getElementById('lmodal-slotprice').value    = slotPrice;
+      document.getElementById('lmodal-minslots').value     = minSlots;
+      document.getElementById('lmodal-totalslots').value   = totalSlots;
+      document.getElementById('lmodal-filledslots').value  = listing ? (listing.filled_slots || 0) : 0;
+      document.getElementById('lmodal-desc').value         = listing ? (listing.description || '') : '';
+      document.getElementById('lmodal-highlights').value   = listing ? ((listing.highlights || []).join('\n')) : '';
+      document.getElementById('lmodal-manager').value      = listing ? (listing.manager_name || '') : '';
+      document.getElementById('lmodal-managerexp').value   = listing ? (listing.manager_experience || '') : '';
+      document.getElementById('lmodal-featured').checked   = listing ? !!listing.is_featured : false;
+      document.getElementById('lmodal-insured').checked    = listing ? !!listing.is_insured : false;
+      document.getElementById('lmodal-insurer-wrap').style.display = (listing && listing.is_insured) ? 'block' : 'none';
+      document.getElementById('lmodal-insurer').value      = listing ? (listing.insurance_provider || '') : '';
+      document.getElementById('lmodal-error').style.display = 'none';
+      document.getElementById('listing-modal-title').textContent = listing ? 'Edit Listing' : 'Add Listing';
+
+      listingsRecalcPreview();
+      document.getElementById('listing-modal-overlay').style.display = 'block';
+      document.getElementById('listing-modal').style.display = 'block';
+    };
+
+    window.listingsCloseModal = function() {
+      document.getElementById('listing-modal-overlay').style.display = 'none';
+      document.getElementById('listing-modal').style.display = 'none';
+    };
+
+    // ── Save (insert or update) ──────────────────────────────
+    window.listingsSave = async function() {
+      var name      = document.getElementById('lmodal-name').value.trim();
+      var type      = document.getElementById('lmodal-type').value;
+      var location  = document.getElementById('lmodal-location').value.trim();
+      var duration  = Number(document.getElementById('lmodal-duration').value);
+      var roi       = Number(document.getElementById('lmodal-roi').value);
+      var slotPrice = Number(document.getElementById('lmodal-slotprice').value);
+      var minSlots  = Number(document.getElementById('lmodal-minslots').value);
+      var totalSlots= Number(document.getElementById('lmodal-totalslots').value);
+      var filled    = Number(document.getElementById('lmodal-filledslots').value) || 0;
+      var errorEl   = document.getElementById('lmodal-error');
+
+      errorEl.style.display = 'none';
+      if (!name)       { errorEl.textContent='Listing name is required.';      errorEl.style.display='block'; return; }
+      if (!duration)   { errorEl.textContent='Duration is required.';          errorEl.style.display='block'; return; }
+      if (!roi)        { errorEl.textContent='ROI is required.';               errorEl.style.display='block'; return; }
+      if (!slotPrice)  { errorEl.textContent='Price per slot is required.';   errorEl.style.display='block'; return; }
+      if (!minSlots)   { errorEl.textContent='Minimum slots is required.';    errorEl.style.display='block'; return; }
+      if (!totalSlots) { errorEl.textContent='Total slots is required.';      errorEl.style.display='block'; return; }
+
+      var highlightsRaw = document.getElementById('lmodal-highlights').value;
+      var highlights = highlightsRaw.split('\n').map(function(s){ return s.trim(); }).filter(Boolean);
+
+      var payload = {
+        name:                name,
+        type:                type,
+        location:            location || 'Nigeria',
+        emoji:               document.getElementById('lmodal-emoji').value || '🌾',
+        risk_level:          document.getElementById('lmodal-risk').value,
+        duration_months:     duration,
+        roi_percent:         roi,
+        min_investment_kobo: Math.round(slotPrice * minSlots * 100),
+        max_investment_kobo: Math.round(slotPrice * totalSlots * 100),
+        total_slots:         totalSlots,
+        filled_slots:        filled,
+        funding_target_kobo: Math.round(slotPrice * totalSlots * 100),
+        funding_raised_kobo: Math.round(slotPrice * filled * 100),
+        description:         document.getElementById('lmodal-desc').value.trim() || null,
+        highlights:          highlights.length ? highlights : null,
+        manager_name:        document.getElementById('lmodal-manager').value.trim() || null,
+        manager_experience:  document.getElementById('lmodal-managerexp').value.trim() || null,
+        is_featured:         document.getElementById('lmodal-featured').checked,
+        is_insured:          document.getElementById('lmodal-insured').checked,
+        insurance_provider:  document.getElementById('lmodal-insured').checked
+                             ? (document.getElementById('lmodal-insurer').value.trim() || null)
+                             : null,
+        status:              'active',
+      };
+
+      var btn = document.getElementById('lmodal-save-btn');
+      if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+
+      try {
+        var existingId = document.getElementById('lmodal-id').value;
+        var res;
+        if (existingId) {
+          res = await FA.supabase.from('farm_listings').update(payload).eq('id', existingId);
+        } else {
+          payload.start_date    = new Date().toISOString().slice(0,10);
+          payload.maturity_date = new Date(Date.now() + duration * 30.44 * 86400000).toISOString().slice(0,10);
+          payload.tagline       = name;
+          res = await FA.supabase.from('farm_listings').insert(payload);
+        }
+        if (res.error) throw res.error;
+        listingsCloseModal();
+        await listingsLoad();
+      } catch(e) {
+        errorEl.textContent = 'Save failed: ' + (e.message || 'Unknown error');
+        errorEl.style.display = 'block';
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = 'Save Listing'; }
+      }
+    };
+
+    // ── Close (set status to 'closed') ───────────────────────
+    window.listingsOpenCloseModal = function(id) {
+      _closingId = id;
+      var listing = _listings.find(function(l){ return l.id === id; });
+      var closeMsg = document.getElementById('listing-close-msg');
+      if (closeMsg) {
+        closeMsg.textContent = 'This will hide "' + (listing ? listing.name : 'this listing') +
+          '" from new investors immediately. Existing investments are not affected. You can edit it back to "active" any time.';
+      }
+      document.getElementById('listing-close-overlay').style.display = 'block';
+      document.getElementById('listing-close-modal').style.display  = 'block';
+    };
+
+    window.listingsCloseCloseModal = function() {
+      _closingId = null;
+      document.getElementById('listing-close-overlay').style.display = 'none';
+      document.getElementById('listing-close-modal').style.display  = 'none';
+    };
+
+    window.listingsConfirmClose = async function() {
+      if (!_closingId) return;
+      try {
+        var res = await FA.supabase.from('farm_listings').update({ status: 'closed' }).eq('id', _closingId);
+        if (res.error) throw res.error;
+        listingsCloseCloseModal();
+        await listingsLoad();
+      } catch(e) {
+        alert('Failed to close listing: ' + e.message);
+      }
+    };
+
+    // ── Permanent delete (only shown for already-closed listings) ──
+    window.listingsDelete = async function(id) {
+      var listing = _listings.find(function(l){ return l.id === id; });
+      if (!confirm('Permanently delete "' + (listing ? listing.name : 'this listing') + '"?\n\nThis cannot be undone. Only do this if no investors have money in it.')) return;
+      try {
+        var res = await FA.supabase.from('farm_listings').delete().eq('id', id);
+        if (res.error) throw res.error;
+        await listingsLoad();
+      } catch(e) {
+        alert('Delete failed: ' + e.message);
+      }
+    };
+
+  })();
 
   /* ── ROUTER EXTENSION ───────────────────────────────────────────────────── */
   // Hook into FarmAlly router to protect admin-dashboard route

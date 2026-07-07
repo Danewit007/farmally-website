@@ -422,6 +422,50 @@
       if (error) throw error;
     }
 
+    // ── Bank accounts & withdrawal requests ───────────────────
+    async function getBankAccounts() {
+      const { data, error } = await _sb.from('bank_accounts')
+        .select('*')
+        .eq('user_id', _session.user.id)
+        .order('created_at', { ascending: true });
+      if (error) throw error;
+      return data;
+    }
+
+    async function addBankAccount(bankName, accountNumber, accountName) {
+      const { data, error } = await _sb.from('bank_accounts')
+        .insert({
+          user_id: _session.user.id,
+          bank_name: bankName,
+          account_number: accountNumber,
+          account_name: accountName,
+        })
+        .select()
+        .single();
+      if (error) throw error;
+      return data;
+    }
+
+    async function deleteBankAccount(bankAccountId) {
+      const { error } = await _sb.from('bank_accounts').delete().eq('id', bankAccountId);
+      if (error) throw error;
+    }
+
+    async function createWithdrawalRequest(bankAccountId, amountNaira, walletReference) {
+      const { data, error } = await _sb.from('withdrawal_requests')
+        .insert({
+          user_id: _session.user.id,
+          bank_account_id: bankAccountId,
+          amount_kobo: nairaToKobo(amountNaira),
+          wallet_reference: walletReference,
+          status: 'pending',
+        })
+        .select()
+        .single();
+      if (error) throw error;
+      return data;
+    }
+
     // ── Expose public API ─────────────────────────────────────
     window.FA = {
       // Auth
@@ -430,6 +474,8 @@
       getWalletNaira, fmtNaira, koboToNaira, nairaToKobo,
       // Wallet
       getTransactions, deposit, withdraw,
+      // Bank accounts & withdrawal requests
+      getBankAccounts, addBankAccount, deleteBankAccount, createWithdrawalRequest,
       // Investments
       getFarmListings, getUserInvestments, invest,
       // Shop
@@ -7127,7 +7173,7 @@ document.addEventListener("DOMContentLoaded", window.marketplaceInit);
   <div id="tab-deposit" class="tab-panel">
     <div class="g2">
       <div class="card" id="depositPanel">
-        <div class="sh"><div><h2>Fund Wallet</h2><p>Choose an amount and payment method</p></div></div>
+        <div class="sh"><div><h2>Fund Wallet</h2><p>Choose an amount to deposit</p></div></div>
         <div style="margin-bottom:20px">
           <label class="form-section-lbl">AMOUNT</label>
           <div class="amt-wrap">
@@ -7135,10 +7181,6 @@ document.addEventListener("DOMContentLoaded", window.marketplaceInit);
             <input type="number" id="depAmount" class="amt-input" placeholder="0.00" oninput="updateDepositUI()" />
           </div>
           <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap" id="depPresets"></div>
-        </div>
-        <div style="margin-bottom:24px">
-          <label class="form-section-lbl">PAYMENT METHOD</label>
-          <div style="display:flex;flex-direction:column;gap:10px" id="depMethods"></div>
         </div>
         <div id="depSummary" style="display:none;margin-bottom:20px">
           <div class="summary-box">
@@ -7186,12 +7228,13 @@ document.addEventListener("DOMContentLoaded", window.marketplaceInit);
         <div style="margin-bottom:24px">
           <label class="form-section-lbl">DESTINATION ACCOUNT</label>
           <div style="display:flex;flex-direction:column;gap:10px" id="bankButtons"></div>
-          <button class="add-acct" style="margin-top:10px">+ Add New Account</button>
+          <button class="add-acct" style="margin-top:10px" onclick="openAddBankModal()">+ Add New Account</button>
         </div>
         <div id="wdSummary" style="display:none;margin-bottom:20px">
           <div class="summary-box" id="wdSummaryContent"></div>
         </div>
-        <button class="btn-dark-full">Confirm Withdrawal</button>
+        <div id="wdError" style="display:none;color:#E74C3C;font-size:13px;margin-bottom:12px"></div>
+        <button class="btn-dark-full" id="wdConfirmBtn" onclick="confirmWithdrawal()">Confirm Withdrawal</button>
       </div>
       <div style="display:flex;flex-direction:column;gap:16px">
         <div class="card" style="border-radius:20px">
@@ -7417,6 +7460,11 @@ window.faLoadWallet = async function() {
   if (typeof checkPendingWalletDeposit === 'function') {
     // fire-and-forget; don't block the rest of the refresh on it
     checkPendingWalletDeposit();
+  }
+
+  // Load the user's saved bank accounts for the withdraw tab
+  if (typeof loadBankAccounts === 'function') {
+    loadBankAccounts();
   }
 
   // ── Greeting + timestamp ──────────────────────────────────────
@@ -7967,20 +8015,8 @@ window.renderRoiTable = function() {
 
 /* ── DEPOSIT PANEL ── */
 const depPresets=[5000,10000,50000,100000,250000,500000];
-let depMethod="bank";
 document.getElementById("depPresets").innerHTML=depPresets.map(p=>`
   <button class="preset-btn" data-preset="${p}" onclick="setDepPreset(${p})">₦${fmt(p)}</button>`).join("");
-document.getElementById("depMethods").innerHTML=[
-  {id:"bank",icon:"🏦",label:"Bank Transfer",sub:"GTBank · Account: 0123456789"},
-  {id:"card",icon:"💳",label:"Debit Card",sub:"Visa ****9832 · Expires 04/28"},
-  {id:"ussd",icon:"📱",label:"USSD",sub:"*737# and other USSD codes"},
-].map(m=>`
-  <button class="method-btn ${m.id==="bank"?"active":""}" id="meth-${m.id}" onclick="setDepMethod('${m.id}')">
-    <span style="font-size:22px">${m.icon}</span>
-    <div style="flex:1"><div style="font-size:14px;font-weight:700;color:var(--ink)">${m.label}</div>
-    <div style="font-size:12px;color:var(--mid)">${m.sub}</div></div>
-    <div class="radio-circle ${m.id==="bank"?"active":""}" id="radio-${m.id}"><div class="radio-dot" style="${m.id!=="bank"?"display:none":""}"></div></div>
-  </button>`).join("");
 
 function setDepPreset(p){
   document.getElementById("depAmount").value=p;
@@ -7988,14 +8024,6 @@ function setDepPreset(p){
     b.classList.toggle("active",parseInt(b.dataset.preset)===p);
   });
   updateDepositUI();
-}
-function setDepMethod(id){
-  depMethod=id;
-  document.querySelectorAll(".method-btn").forEach(b=>b.classList.remove("active"));
-  document.querySelectorAll(".radio-circle").forEach(b=>{ b.classList.remove("active"); b.querySelector(".radio-dot").style.display="none"; });
-  document.getElementById("meth-"+id).classList.add("active");
-  const rc=document.getElementById("radio-"+id);
-  rc.classList.add("active"); rc.querySelector(".radio-dot").style.display="";
 }
 function updateDepositUI(){
   const amt=document.getElementById("depAmount").value;
@@ -8035,7 +8063,9 @@ window.walletProceedToPayment = async function(){
   if(!window.FA || !FA.isLoggedIn()){ depSetStatus("Please log in again.", true); return; }
   const prof = FA.getProfile();
   if(!prof){ depSetStatus("Please log in again.", true); return; }
-  if(!prof.email){ depSetStatus("Your account needs an email on file to deposit.", true); return; }
+  const sess = FA.getSession();
+  const userEmail = sess && sess.user && sess.user.email;
+  if(!userEmail){ depSetStatus("Your account needs an email on file to deposit.", true); return; }
 
   const btn = document.getElementById("depPayBtn");
   const originalLabel = btn ? btn.textContent : "";
@@ -8067,7 +8097,7 @@ window.walletProceedToPayment = async function(){
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         amount:       amount,        // Naira — server converts to kobo for Paystack
-        email:        prof.email,
+        email:        userEmail,
         reference:    clientRef,
         purpose:      "wallet_deposit",
         callback_url: window.location.origin + window.location.pathname + "#wallet",
@@ -8152,28 +8182,119 @@ document.addEventListener("DOMContentLoaded", function(){
 });
 
 /* ── WITHDRAW PANEL ── */
-let wdBank="gtb";
-document.getElementById("bankButtons").innerHTML=[
-  {id:"gtb",label:"GTBank",acct:"****4421",name:"Tunde Adeyemi"},
-  {id:"access",label:"Access Bank",acct:"****1190",name:"Tunde Adeyemi"},
-].map(b=>`
-  <button class="bank-btn ${b.id==="gtb"?"active":""}" id="bank-${b.id}" onclick="setBank('${b.id}')">
-    <div class="bank-icon" id="bankicon-${b.id}">${b.id==="gtb"?"✓":"🏦"}</div>
-    <div style="flex:1"><div style="font-size:14px;font-weight:700;color:var(--ink)">${b.label} ${b.acct}</div>
-    <div style="font-size:12px;color:var(--mid)">${b.name}</div></div>
-  </button>`).join("");
+let wdBank = null;      // selected bank_account id (real uuid, not fake)
+let wdAccounts = [];    // cached list of the user's real bank accounts
+
+async function loadBankAccounts() {
+  const container = document.getElementById("bankButtons");
+  if (!container) return;
+  try {
+    wdAccounts = await FA.getBankAccounts();
+  } catch (e) {
+    container.innerHTML = `<div style="font-size:13px;color:var(--mid);padding:12px 0">Couldn't load your accounts. Please refresh.</div>`;
+    return;
+  }
+  if (!wdAccounts.length) {
+    container.innerHTML = `<div style="font-size:13px;color:var(--mid);padding:12px 0">No bank account added yet. Add one below to withdraw.</div>`;
+    wdBank = null;
+    return;
+  }
+  if (!wdBank || !wdAccounts.find(a => a.id === wdBank)) {
+    wdBank = wdAccounts[0].id;
+  }
+  container.innerHTML = wdAccounts.map(a => `
+    <button class="bank-btn ${a.id===wdBank?"active":""}" id="bank-${a.id}" onclick="setBank('${a.id}')">
+      <div class="bank-icon" id="bankicon-${a.id}">${a.id===wdBank?"✓":"🏦"}</div>
+      <div style="flex:1"><div style="font-size:14px;font-weight:700;color:var(--ink)">${a.bank_name} ****${String(a.account_number).slice(-4)}</div>
+      <div style="font-size:12px;color:var(--mid)">${a.account_name}</div></div>
+    </button>`).join("");
+  updateWithdrawUI();
+}
+
 function setBank(id){
   wdBank=id;
   document.querySelectorAll(".bank-btn").forEach(b=>b.classList.remove("active"));
-  document.getElementById("bank-"+id).classList.add("active");
+  const el = document.getElementById("bank-"+id);
+  if (el) el.classList.add("active");
   document.querySelectorAll(".bank-icon").forEach(ic=>ic.textContent="🏦");
-  document.getElementById("bankicon-"+id).textContent="✓";
+  const icEl = document.getElementById("bankicon-"+id);
+  if (icEl) icEl.textContent="✓";
   updateWithdrawUI();
+}
+
+function openAddBankModal(){
+  document.getElementById("newBankName").value = "";
+  document.getElementById("newAccountNumber").value = "";
+  document.getElementById("newAccountName").value = "";
+  document.getElementById("addBankError").style.display = "none";
+  document.getElementById("addBankModalOverlay").style.display = "flex";
+}
+function closeAddBankModal(){
+  document.getElementById("addBankModalOverlay").style.display = "none";
+}
+async function saveBankAccount(){
+  const errEl = document.getElementById("addBankError");
+  const bankName = document.getElementById("newBankName").value.trim();
+  const acctNum  = document.getElementById("newAccountNumber").value.trim();
+  const acctName = document.getElementById("newAccountName").value.trim();
+  errEl.style.display = "none";
+  if (!bankName || !acctNum || !acctName) {
+    errEl.textContent = "Please fill in all fields."; errEl.style.display = "block"; return;
+  }
+  if (!/^\d{10}$/.test(acctNum)) {
+    errEl.textContent = "Account number should be exactly 10 digits."; errEl.style.display = "block"; return;
+  }
+  const btn = document.getElementById("saveBankBtn");
+  btn.disabled = true; btn.textContent = "Saving…";
+  try {
+    await FA.addBankAccount(bankName, acctNum, acctName);
+    closeAddBankModal();
+    await loadBankAccounts();
+  } catch (e) {
+    errEl.textContent = e.message || "Couldn't save account. Please try again."; errEl.style.display = "block";
+  } finally {
+    btn.disabled = false; btn.textContent = "Save Account";
+  }
+}
+
+async function confirmWithdrawal(){
+  const errEl = document.getElementById("wdError");
+  const btn   = document.getElementById("wdConfirmBtn");
+  errEl.style.display = "none";
+  const amount = Number(document.getElementById("wdAmount").value);
+  const available = window._liveWalletNaira || 0;
+
+  if (!amount || amount <= 0) { errEl.textContent = "Enter an amount to withdraw."; errEl.style.display="block"; return; }
+  if (amount > available) { errEl.textContent = "Amount exceeds your available balance."; errEl.style.display="block"; return; }
+  if (!wdBank) { errEl.textContent = "Add and select a bank account first."; errEl.style.display="block"; return; }
+
+  const originalLabel = btn.textContent;
+  btn.disabled = true; btn.textContent = "Processing…";
+  try {
+    const reference = "WD-" + Date.now();
+    // Reserve the funds immediately so they can't be double-spent while
+    // the withdrawal is pending manual review — mirrors how the deposit
+    // flow treats Paystack as the source of truth, just in reverse.
+    await FA.withdraw(amount, reference, "Withdrawal request");
+    await FA.createWithdrawalRequest(wdBank, amount, reference);
+    document.getElementById("wdAmount").value = "";
+    document.getElementById("wdSummary").style.display = "none";
+    errEl.style.color = "#16A34A";
+    errEl.textContent = "Withdrawal request submitted! Funds will arrive within 1–2 business days once approved.";
+    errEl.style.display = "block";
+  } catch (e) {
+    errEl.style.color = "#E74C3C";
+    errEl.textContent = e.message || "Couldn't submit withdrawal request. Please try again.";
+    errEl.style.display = "block";
+  } finally {
+    btn.disabled = false; btn.textContent = originalLabel;
+  }
 }
 function updateWithdrawUI(){
   const amt=document.getElementById("wdAmount").value;
   const sum=document.getElementById("wdSummary");
-  const dest=wdBank==="gtb"?"GTBank ****4421":"Access Bank ****1190";
+  const selected = wdAccounts.find(a => a.id === wdBank);
+  const dest = selected ? `${selected.bank_name} ****${String(selected.account_number).slice(-4)}` : "No account selected";
   if(amt&&Number(amt)>0){
     sum.style.display="block";
     document.getElementById("wdSummaryContent").innerHTML=`
@@ -8775,6 +8896,32 @@ drawDonut2();
   </div>
   <div class="um-drawer-body" id="um-drawer-body"><!-- filled by JS --></div>
   <div class="um-drawer-footer" id="um-drawer-footer"><!-- filled by JS --></div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════
+     ADD BANK ACCOUNT MODAL
+═══════════════════════════════════════════════════════════════ -->
+<div id="addBankModalOverlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:2200;align-items:center;justify-content:center;padding:16px;">
+  <div style="background:#fff;border-radius:20px;padding:28px 24px 24px;max-width:380px;width:100%;box-shadow:0 24px 64px rgba(0,0,0,0.22);">
+    <div style="font-family:'Sora',sans-serif;font-weight:800;font-size:18px;color:var(--ink);margin-bottom:4px;">Add Bank Account</div>
+    <div style="font-size:13px;color:var(--mid);margin-bottom:20px;">This account will be used for withdrawals. Double-check the details — payouts are sent manually by our team.</div>
+
+    <label class="form-section-lbl">BANK NAME</label>
+    <input type="text" id="newBankName" placeholder="e.g. GTBank" style="width:100%;padding:12px 14px;border:1px solid var(--divider);border-radius:10px;font-size:14px;margin-bottom:14px;font-family:inherit;" />
+
+    <label class="form-section-lbl">ACCOUNT NUMBER</label>
+    <input type="text" id="newAccountNumber" placeholder="0123456789" inputmode="numeric" maxlength="10" style="width:100%;padding:12px 14px;border:1px solid var(--divider);border-radius:10px;font-size:14px;margin-bottom:14px;font-family:inherit;" />
+
+    <label class="form-section-lbl">ACCOUNT HOLDER NAME</label>
+    <input type="text" id="newAccountName" placeholder="As it appears on your bank account" style="width:100%;padding:12px 14px;border:1px solid var(--divider);border-radius:10px;font-size:14px;margin-bottom:8px;font-family:inherit;" />
+
+    <div id="addBankError" style="display:none;color:#E74C3C;font-size:13px;margin-bottom:8px;"></div>
+
+    <div style="display:flex;gap:10px;margin-top:16px;">
+      <button onclick="closeAddBankModal()" style="flex:1;padding:12px;border-radius:10px;border:1px solid var(--divider);background:#fff;color:var(--ink);font-weight:700;font-size:14px;">Cancel</button>
+      <button id="saveBankBtn" onclick="saveBankAccount()" style="flex:1;padding:12px;border-radius:10px;border:none;background:var(--ink);color:#fff;font-weight:700;font-size:14px;">Save Account</button>
+    </div>
+  </div>
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════════
@@ -9479,7 +9626,9 @@ window.adminDoLogout = function() {
   async function processPaystackPayment() {
     var total = cartTotalKobo();
     var prof  = FA.getProfile();
-    if (!prof || !prof.email) throw new Error('Your account needs an email on file to pay with Paystack.');
+    var sess  = FA.getSession();
+    var userEmail = sess && sess.user && sess.user.email;
+    if (!prof || !userEmail) throw new Error('Your account needs an email on file to pay with Paystack.');
     // Create pending order — its own id doubles as the Paystack
     // reference, so there's no separate "wait for an id to come
     // back and attach it" step needed.
@@ -9492,7 +9641,7 @@ window.adminDoLogout = function() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         amount:       total / 100,   // Naira — server converts to kobo for Paystack
-        email:        prof.email,
+        email:        userEmail,
         reference:    order.id,
         purpose:      'shop_order',
         callback_url: window.location.origin + window.location.pathname + '#shop',
@@ -9591,9 +9740,11 @@ window.adminDoLogout = function() {
         return;
       }
       var prof = FA.getProfile();
+      var sess = FA.getSession();
+      var userEmail = (sess && sess.user && sess.user.email) || '';
       var itemsSummary = items.map(function(i){ return i.qty+'× '+i.name; }).join(', ') || 'See order details';
       await emailjs.send(cfg.serviceId, cfg.templateId, {
-        to_email:        prof ? prof.email : '',
+        to_email:        userEmail,
         customer_name:   S.co.delivery.name,
         order_id:        (order.id||'').substring(0,8).toUpperCase(),
         order_items:     itemsSummary,

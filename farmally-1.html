@@ -316,6 +316,7 @@
           if (targetRoute === 'marketplace' && typeof window.faLoadMarketplace === 'function') window.faLoadMarketplace();
           if (targetRoute === 'wallet'      && typeof window.faLoadWallet      === 'function') window.faLoadWallet();
           if (targetRoute === 'shop'        && typeof window.shopLoad          === 'function') window.shopLoad();
+          if (targetRoute === 'profile'     && typeof window.faLoadProfilePage === 'function') window.faLoadProfilePage();
         }, 150);
       }
       // Listen for auth state changes
@@ -381,8 +382,10 @@
       // reflects logged-in state without waiting for a navigate() call
       const authLabel = document.getElementById('mobile-nav-auth-label');
       const authBtn   = document.getElementById('mobile-nav-auth-btn');
-      if (authLabel) authLabel.textContent = 'Logout';
-      if (authBtn)   authBtn.onclick = function() { signOut(); };
+      const authIcon  = document.getElementById('mobile-nav-auth-icon');
+      if (authLabel) authLabel.textContent = 'Profile';
+      if (authBtn)   { authBtn.onclick = null; authBtn.dataset.route = 'profile'; }
+      if (authIcon)  authIcon.innerHTML = '<circle cx="12" cy="8" r="4"/><path d="M4 21v-1a8 8 0 0 1 16 0v1"/>';
     }
 
 
@@ -466,6 +469,16 @@
       return data;
     }
 
+    async function sendMoney(recipientEmail, amountNaira, description) {
+      const { data, error } = await _sb.rpc('transfer_wallet', {
+        recipient_email: recipientEmail,
+        amount_kobo: nairaToKobo(amountNaira),
+        description: description || null,
+      });
+      if (error) throw error;
+      return data;
+    }
+
     // ── Expose public API ─────────────────────────────────────
     window.FA = {
       // Auth
@@ -476,6 +489,8 @@
       getTransactions, deposit, withdraw,
       // Bank accounts & withdrawal requests
       getBankAccounts, addBankAccount, deleteBankAccount, createWithdrawalRequest,
+      // Peer-to-peer transfer
+      sendMoney,
       // Investments
       getFarmListings, getUserInvestments, invest,
       // Shop
@@ -2761,6 +2776,15 @@
 #wallet-page .bank-icon { width:38px; height:38px; border-radius:10px; background:var(--offwhite); display:flex; align-items:center; justify-content:center; font-size:16px; transition:background .15s; }
 #wallet-page .bank-btn.active .bank-icon { background:var(--green); color:#fff; }
 #wallet-page .add-acct { padding:12px 16px; border-radius:12px; border:1.5px dashed var(--divider); background:transparent; color:var(--blue); font-size:13px; font-weight:700; cursor:pointer; width:100%; }
+
+/* ── Profile page (shares wallet-page's visual language) ── */
+#profile-page .sh { display:flex; justify-content:space-between; align-items:flex-end; margin-bottom:10px; }
+#profile-page .sh h2 { font-family:'Sora',sans-serif; font-weight:700; font-size:18px; color:var(--ink); }
+#profile-page .sh p { font-size:12px; color:var(--mid); margin-top:3px; }
+#profile-page .btn-dark-full { width:100%; padding:14px 0; background:var(--ink); color:#fff; border:none; border-radius:12px; font-size:15px; font-weight:700; cursor:pointer; }
+#profile-page .page-title h1 { font-family:'Sora',sans-serif; font-weight:700; font-size:26px; color:var(--ink); }
+#profile-page .page-title p { color:var(--mid); font-size:13px; margin-top:4px; }
+#profile-page .add-acct { padding:12px 16px; border-radius:12px; border:1.5px dashed var(--divider); background:transparent; color:var(--blue); font-size:13px; font-weight:700; cursor:pointer; }
 
 /* ── Wallet page mobile responsive ── */
 @media (max-width: 767px) {
@@ -5929,22 +5953,35 @@ function buildHeroMetrics() {
 }
 
 /* ─────────── QUICK ACTIONS ─────────── */
+function qaGoToInvest(){ FarmAlly.navigate('marketplace'); }
+function qaGoToDeposit(){
+  FarmAlly.navigate('wallet');
+  setTimeout(function(){ if (typeof switchTab === 'function') switchTab('deposit'); }, 250);
+}
+function qaGoToWithdraw(){
+  FarmAlly.navigate('wallet');
+  setTimeout(function(){ if (typeof switchTab === 'function') switchTab('withdraw'); }, 250);
+}
+function qaReferFriends(){
+  alert('Referral sharing is coming soon — check back shortly!');
+}
 function buildQuickActions() {
   const actions=[
-    {icon:"📈",label:"Invest Now",color:"#28A745",bg:"#E8F8ED",primary:true},
-    {icon:"💳",label:"Deposit Funds",color:"#007BFF",bg:"#E8F0FF"},
-    {icon:"🏦",label:"Withdraw",color:"#FFC107",bg:"#FFF8E1"},
-    {icon:"🎁",label:"Refer Friends",color:"#17A2B8",bg:"#E0F7FA"},
+    {icon:"📈",label:"Invest Now",color:"#28A745",bg:"#E8F8ED",primary:true,action:qaGoToInvest},
+    {icon:"💳",label:"Deposit Funds",color:"#007BFF",bg:"#E8F0FF",action:qaGoToDeposit},
+    {icon:"🏦",label:"Withdraw",color:"#FFC107",bg:"#FFF8E1",action:qaGoToWithdraw},
+    {icon:"🎁",label:"Refer Friends",color:"#17A2B8",bg:"#E0F7FA",action:qaReferFriends},
   ];
   const grid=document.getElementById('qa-grid');
   actions.forEach(a=>{
     const btn=document.createElement('button');
     btn.className='qa-btn fa-btn';
-    btn.style.cssText=`background:${a.primary?a.color:'#fff'};border:1px solid ${a.primary?a.color:'#E9ECEF'};`;
+    btn.style.cssText=`background:${a.primary?a.color:'#fff'};border:1px solid ${a.primary?a.color:'#E9ECEF'};cursor:pointer;`;
     btn.innerHTML=`
       <span class="qa-icon" style="background:${a.primary?'rgba(255,255,255,0.18)':a.bg};">${a.icon}</span>
       <span class="qa-label" style="color:${a.primary?'#fff':'#212529'};">${a.label}</span>
     `;
+    btn.onclick=a.action;
     grid.appendChild(btn);
   });
 }
@@ -7103,9 +7140,9 @@ document.addEventListener("DOMContentLoaded", window.marketplaceInit);
           <div><div class="wallet-stat-lbl">Total Earned</div><div class="wallet-stat-val ge" id="walletStatEarned">₦486K</div></div>
         </div>
         <div class="wallet-actions">
-          <button class="wallet-btn primary">Fund Wallet</button>
-          <button class="wallet-btn ghost">Withdraw</button>
-          <button class="wallet-btn ghost">Send</button>
+          <button class="wallet-btn primary" onclick="switchTab('deposit')">Fund Wallet</button>
+          <button class="wallet-btn ghost" onclick="switchTab('withdraw')">Withdraw</button>
+          <button class="wallet-btn ghost" onclick="openSendModal()">Send</button>
         </div>
       </div>
       <div class="stat-cards-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
@@ -7338,18 +7375,16 @@ document.addEventListener("DOMContentLoaded", window.marketplaceInit);
   <!-- EARNINGS -->
   <div id="tab-earnings" class="tab-panel">
     <div class="g4">
-      <div class="stat-card"><div class="stat-label">All-Time Earnings</div><div class="stat-value">₦486K</div><div class="stat-sub" style="color:var(--green)">Since account creation</div></div>
-      <div class="stat-card"><span class="stat-badge">+8.3%</span><div class="stat-label">This Month</div><div class="stat-value">₦91K</div><div class="stat-sub" style="color:var(--green)">↑ +8.3% vs last month</div></div>
-      <div class="stat-card"><div class="stat-label">Pending Payouts</div><div class="stat-value">₦147K</div><div class="stat-sub" style="color:var(--blue)">Across 3 active farms</div></div>
-      <div class="stat-card"><div class="stat-label">Avg Monthly</div><div class="stat-value">₦68.7K</div><div class="stat-sub" style="color:var(--mid)">Based on last 12 months</div></div>
+      <div class="stat-card"><div class="stat-label">All-Time Earnings</div><div class="stat-value" id="statAllTimeEarnings">₦0</div><div class="stat-sub" style="color:var(--green)">Since account creation</div></div>
+      <div class="stat-card"><span class="stat-badge" id="statThisMonthBadge" style="display:none"></span><div class="stat-label">This Month</div><div class="stat-value" id="statThisMonth">₦0</div><div class="stat-sub" id="statThisMonthSub" style="color:var(--mid)">No earnings yet this month</div></div>
+      <div class="stat-card"><div class="stat-label">Pending Payouts</div><div class="stat-value" id="statPendingPayouts">₦0</div><div class="stat-sub" style="color:var(--blue)" id="statPendingPayoutsSub">Across 0 active farms</div></div>
+      <div class="stat-card"><div class="stat-label">Avg Monthly</div><div class="stat-value" id="statAvgMonthly">₦0</div><div class="stat-sub" style="color:var(--mid)">Based on last 12 months</div></div>
     </div>
     <div class="g32">
       <div class="card">
         <div class="sh"><div><h2>Monthly Earnings</h2><p>Last 12 months</p></div></div>
         <svg id="earningsBar" viewBox="0 0 560 140" style="width:100%;height:140px"></svg>
-        <div style="display:flex;gap:24px;margin-top:18px;padding-top:18px;border-top:1px solid var(--offwhite)">
-          ${[["Peak Month","Jun · ₦91K"],["Lowest Month","Jul · ₦4.2K"],["12M Total","₦82.4K"]].map(([l,v])=>`<div><div style="font-size:10px;color:var(--mid)">${l}</div><div style="font-size:14px;font-weight:700;color:var(--ink);font-family:'Sora',sans-serif;margin-top:2px">${v}</div></div>`).join("")}
-        </div>
+        <div style="display:flex;gap:24px;margin-top:18px;padding-top:18px;border-top:1px solid var(--offwhite)" id="earningsMonthStats"></div>
       </div>
       <div class="card">
         <div class="sh"><div><h2>Earnings by Farm</h2><p>All-time breakdown</p></div></div>
@@ -7366,10 +7401,10 @@ document.addEventListener("DOMContentLoaded", window.marketplaceInit);
   <!-- ROI -->
   <div id="tab-roi" class="tab-panel">
     <div class="g4">
-      <div class="stat-card"><div class="stat-label">Weighted Avg ROI</div><div class="stat-value">18.4%</div><div class="stat-sub" style="color:var(--mid)">vs 19.2% platform avg</div></div>
-      <div class="stat-card"><span class="stat-badge" style="background:#FCE4EC;color:#E83E8C">🏆 Top</span><div class="stat-label">Best ROI</div><div class="stat-value">24.0%</div><div class="stat-sub" style="color:#E83E8C">Cassava Belt Processing</div></div>
-      <div class="stat-card"><div class="stat-label">Total Return ₦</div><div class="stat-value">+₦486K</div><div class="stat-sub" style="color:var(--green)">Since first investment</div></div>
-      <div class="stat-card"><span class="stat-badge">Estimate</span><div class="stat-label">Projected 12M</div><div class="stat-value">₦720K</div><div class="stat-sub" style="color:var(--green)">If fully reinvested</div></div>
+      <div class="stat-card"><div class="stat-label">Weighted Avg ROI</div><div class="stat-value" id="statWeightedRoi">0%</div><div class="stat-sub" style="color:var(--mid)">Your portfolio average</div></div>
+      <div class="stat-card"><span class="stat-badge" id="statBestRoiBadge" style="background:#FCE4EC;color:#E83E8C;display:none">🏆 Top</span><div class="stat-label">Best ROI</div><div class="stat-value" id="statBestRoi">—</div><div class="stat-sub" style="color:#E83E8C" id="statBestRoiName">No investments yet</div></div>
+      <div class="stat-card"><div class="stat-label">Total Return ₦</div><div class="stat-value" id="statTotalReturn">₦0</div><div class="stat-sub" style="color:var(--green)">Since first investment</div></div>
+      <div class="stat-card"><span class="stat-badge">Estimate</span><div class="stat-label">Projected 12M</div><div class="stat-value" id="statProjected12M">₦0</div><div class="stat-sub" style="color:var(--green)">If fully reinvested at current avg ROI</div></div>
     </div>
     <div class="g2">
       <div class="card">
@@ -7378,46 +7413,7 @@ document.addEventListener("DOMContentLoaded", window.marketplaceInit);
       </div>
       <div class="card">
         <div class="sh"><div><h2>ROI vs Risk</h2><p>Risk-return positioning</p></div></div>
-        <svg viewBox="0 0 400 240" style="width:100%;height:240px">
-          <line x1="40" y1="90" x2="380" y2="90" stroke="var(--divider)" stroke-width="1"/>
-          <line x1="40" y1="140" x2="380" y2="140" stroke="var(--divider)" stroke-width="1"/>
-          <line x1="40" y1="190" x2="380" y2="190" stroke="var(--divider)" stroke-width="1"/>
-          <line x1="150" y1="40" x2="150" y2="210" stroke="var(--divider)" stroke-width="1"/>
-          <line x1="260" y1="40" x2="260" y2="210" stroke="var(--divider)" stroke-width="1"/>
-          <line x1="370" y1="40" x2="370" y2="210" stroke="var(--divider)" stroke-width="1"/>
-          <text x="36" y="46" text-anchor="end" font-size="9" fill="var(--mid)">26%</text>
-          <text x="36" y="96" text-anchor="end" font-size="9" fill="var(--mid)">22%</text>
-          <text x="36" y="146" text-anchor="end" font-size="9" fill="var(--mid)">18%</text>
-          <text x="36" y="196" text-anchor="end" font-size="9" fill="var(--mid)">14%</text>
-          <text x="40" y="224" text-anchor="middle" font-size="9" fill="var(--mid)">Low</text>
-          <text x="220" y="224" text-anchor="middle" font-size="9" fill="var(--mid)">Medium</text>
-          <text x="370" y="224" text-anchor="middle" font-size="9" fill="var(--mid)">High</text>
-          <!-- GreenAcres 19% low risk -->
-          <circle cx="80" cy="153" r="18" fill="var(--green)" opacity=".25"/>
-          <circle cx="80" cy="153" r="7" fill="var(--green)"/>
-          <text x="80" y="141" text-anchor="middle" font-size="9" fill="var(--charcoal)" font-weight="700">GreenAcres</text>
-          <text x="80" y="171" text-anchor="middle" font-size="8" fill="var(--mid)">19%</text>
-          <!-- BlueTide 22% low risk -->
-          <circle cx="80" cy="96" r="14" fill="var(--cyan)" opacity=".25"/>
-          <circle cx="80" cy="96" r="7" fill="var(--cyan)"/>
-          <text x="80" y="84" text-anchor="middle" font-size="9" fill="var(--charcoal)" font-weight="700">BlueTide</text>
-          <text x="80" y="114" text-anchor="middle" font-size="8" fill="var(--mid)">22%</text>
-          <!-- Sunrise 17% medium -->
-          <circle cx="220" cy="165" r="12" fill="var(--warn)" opacity=".25"/>
-          <circle cx="220" cy="165" r="7" fill="var(--warn)"/>
-          <text x="220" y="153" text-anchor="middle" font-size="9" fill="var(--charcoal)" font-weight="700">Sunrise</text>
-          <text x="220" y="183" text-anchor="middle" font-size="8" fill="var(--mid)">17%</text>
-          <!-- Okoye 18.5% medium -->
-          <circle cx="220" cy="140" r="14" fill="var(--blue)" opacity=".25"/>
-          <circle cx="220" cy="140" r="7" fill="var(--blue)"/>
-          <text x="220" y="128" text-anchor="middle" font-size="9" fill="var(--charcoal)" font-weight="700">Okoye</text>
-          <text x="220" y="158" text-anchor="middle" font-size="8" fill="var(--mid)">18.5%</text>
-          <!-- Cassava 24% high -->
-          <circle cx="360" cy="71" r="11" fill="#E83E8C" opacity=".25"/>
-          <circle cx="360" cy="71" r="7" fill="#E83E8C"/>
-          <text x="360" y="59" text-anchor="middle" font-size="9" fill="var(--charcoal)" font-weight="700">Cassava</text>
-          <text x="360" y="89" text-anchor="middle" font-size="8" fill="var(--mid)">24%</text>
-        </svg>
+        <svg id="roiRiskChart" viewBox="0 0 400 240" style="width:100%;height:240px"></svg>
         <p style="font-size:11px;color:var(--mid);margin-top:8px;text-align:center">Bubble size indicates capital deployed</p>
       </div>
     </div>
@@ -7425,7 +7421,7 @@ document.addEventListener("DOMContentLoaded", window.marketplaceInit);
     <div class="card">
       <div class="sh"><div><h2>Full ROI Breakdown</h2><p>Investment-level analysis</p></div></div>
       <div class="tbl-head" style="grid-template-columns:2fr 1fr 1fr 1fr 1fr 1fr">
-        ${["Farm","Invested","Returns","Net P&L","ROI %","Annualised"].map(h=>`<span class="tbl-hcell">${h}</span>`).join("")}
+        <span class="tbl-hcell">Farm</span><span class="tbl-hcell">Invested</span><span class="tbl-hcell">Returns</span><span class="tbl-hcell">Net P&amp;L</span><span class="tbl-hcell">ROI %</span><span class="tbl-hcell">Annualised</span>
       </div>
       <div id="roiTable"></div>
       <div class="tbl-totals" style="grid-template-columns:2fr 1fr 1fr 1fr 1fr 1fr">
@@ -7576,8 +7572,8 @@ window.faLoadWallet = async function() {
 
     // ── Transactions → TRANSACTIONS global ───────────────────────
     if (txns && txns.length > 0) {
-      const typeMap = { deposit:'deposit', withdrawal:'withdraw', investment:'invest', return:'return', refund:'deposit' };
-      const labelMap = { deposit:'Wallet Funded', withdrawal:'Withdrawal', investment:'Investment Made', return:'Returns Credited', refund:'Refund' };
+      const typeMap = { deposit:'deposit', withdrawal:'withdraw', investment:'invest', return:'return', refund:'deposit', send:'withdraw', receive:'deposit' };
+      const labelMap = { deposit:'Wallet Funded', withdrawal:'Withdrawal', investment:'Investment Made', return:'Returns Credited', refund:'Refund', send:'Money Sent', receive:'Money Received' };
       // BUG FIX: assign to the local closure variable (not just window.*) so that
       // renderTxHistory / renderHistory — which close over the local `let TRANSACTIONS` —
       // see the live data. window.TRANSACTIONS is kept in sync as well.
@@ -7596,6 +7592,60 @@ window.faLoadWallet = async function() {
       });
       window.TRANSACTIONS = TRANSACTIONS;
       if (typeof renderTxHistory === 'function') renderTxHistory();
+
+      // ── Monthly Earnings: bucket real 'return' transactions into the
+      //    trailing 12 months (dynamic, ending this month — not a
+      //    hardcoded calendar assumption). Feeds the earnings bar chart,
+      //    This Month / Avg Monthly stat cards, and the Peak/Lowest/12M
+      //    Total summary row. ──
+      (function() {
+        var now = new Date();
+        var monthLabels = [];
+        for (var i = 11; i >= 0; i--) {
+          var d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+          monthLabels.push(d.toLocaleDateString('en-NG', { month: 'short' }));
+        }
+        var buckets = new Array(12).fill(0);
+        txns.forEach(function(t) {
+          if (t.type !== 'return') return;
+          var d = new Date(t.created_at);
+          var monthsAgo = (now.getFullYear() - d.getFullYear()) * 12 + (now.getMonth() - d.getMonth());
+          if (monthsAgo >= 0 && monthsAgo < 12) {
+            buckets[11 - monthsAgo] += FA.koboToNaira(t.amount_kobo);
+          }
+        });
+
+        MONTHS.length = 0; monthLabels.forEach(function(m){ MONTHS.push(m); });
+        MONTHLY_EARNINGS.length = 0; buckets.forEach(function(v){ MONTHLY_EARNINGS.push(v); });
+        if (typeof drawEarningsBar === 'function') drawEarningsBar();
+
+        var thisMonthEarnings = buckets[11];
+        var monthsWithData = buckets.filter(function(v){ return v > 0; }).length;
+        var total12M = buckets.reduce(function(a,b){ return a+b; }, 0);
+        var avgMonthly = monthsWithData > 0 ? total12M / monthsWithData : 0;
+
+        var stm = document.getElementById('statThisMonth'); if (stm) stm.textContent = '₦'+fmt(thisMonthEarnings);
+        var stmSub = document.getElementById('statThisMonthSub');
+        if (stmSub) stmSub.textContent = thisMonthEarnings > 0 ? 'Credited so far this month' : 'No earnings yet this month';
+        var savg = document.getElementById('statAvgMonthly'); if (savg) savg.textContent = '₦'+fmt(avgMonthly);
+
+        var monthStatsEl = document.getElementById('earningsMonthStats');
+        if (monthStatsEl) {
+          if (total12M > 0) {
+            var peakIdx = buckets.indexOf(Math.max.apply(null, buckets));
+            var nonZero = buckets.map(function(v,i){ return v > 0 ? v : Infinity; });
+            var lowIdx = nonZero.indexOf(Math.min.apply(null, nonZero));
+            var peakLabel = monthLabels[peakIdx] + ' · ₦' + fmt(buckets[peakIdx]);
+            var lowLabel = lowIdx >= 0 && isFinite(nonZero[lowIdx]) ? (monthLabels[lowIdx] + ' · ₦' + fmt(buckets[lowIdx])) : '—';
+            monthStatsEl.innerHTML =
+              '<div><div style="font-size:10px;color:var(--mid)">Peak Month</div><div style="font-size:14px;font-weight:700;color:var(--ink);font-family:\'Sora\',sans-serif;margin-top:2px">'+peakLabel+'</div></div>'
+              + '<div><div style="font-size:10px;color:var(--mid)">Lowest Month</div><div style="font-size:14px;font-weight:700;color:var(--ink);font-family:\'Sora\',sans-serif;margin-top:2px">'+lowLabel+'</div></div>'
+              + '<div><div style="font-size:10px;color:var(--mid)">12M Total</div><div style="font-size:14px;font-weight:700;color:var(--ink);font-family:\'Sora\',sans-serif;margin-top:2px">₦'+fmt(total12M)+'</div></div>';
+          } else {
+            monthStatsEl.innerHTML = '<div style="font-size:13px;color:var(--mid)">No earnings recorded yet in the last 12 months.</div>';
+          }
+        }
+      })();
 
       // ── Populate History tab stats and Withdrawal Summary from live data ──
       var totalIn  = TRANSACTIONS.filter(function(t){ return t.amount >= 0; })
@@ -8009,6 +8059,64 @@ window.renderRoiTable = function() {
   var tnv = document.getElementById("totalNetVal"); if(tnv) tnv.textContent = "+₦"+fmt(totalEarned);
   var trp = document.getElementById("totalRoiPct"); if(trp) trp.textContent = avgRoi+"%";
   var tan = document.getElementById("totalAnnualised"); if(tan) tan.textContent = avgRoi+"% p.a.";
+
+  // ── Earnings tab: All-Time Earnings + Pending Payouts (real, from INVESTMENTS) ──
+  var pendingPayouts = INVESTMENTS.filter(function(i){ return i.status === 'maturing'; });
+  var pendingTotal = pendingPayouts.reduce(function(a,b){ return a + b.earned; }, 0);
+  var ate = document.getElementById("statAllTimeEarnings"); if(ate) ate.textContent = "₦"+fmt(totalEarned);
+  var spp = document.getElementById("statPendingPayouts"); if(spp) spp.textContent = "₦"+fmt(pendingTotal);
+  var sppSub = document.getElementById("statPendingPayoutsSub");
+  if(sppSub) sppSub.textContent = "Across " + pendingPayouts.length + " active farm" + (pendingPayouts.length === 1 ? "" : "s");
+
+  // ── ROI tab: Weighted Avg ROI, Best ROI, Total Return, Projected 12M (real) ──
+  var swr = document.getElementById("statWeightedRoi"); if(swr) swr.textContent = avgRoi+"%";
+  var str_ = document.getElementById("statTotalReturn"); if(str_) str_.textContent = "+₦"+fmt(totalEarned);
+  var projected12M = totalInv * (avgRoi/100);
+  var sp12 = document.getElementById("statProjected12M"); if(sp12) sp12.textContent = "₦"+fmt(projected12M);
+
+  if (INVESTMENTS.length > 0) {
+    var best = INVESTMENTS.reduce(function(a,b){ return b.roi > a.roi ? b : a; });
+    var sbr = document.getElementById("statBestRoi"); if(sbr) sbr.textContent = best.roi+"%";
+    var sbrName = document.getElementById("statBestRoiName"); if(sbrName) sbrName.textContent = best.name;
+    var sbrBadge = document.getElementById("statBestRoiBadge"); if(sbrBadge) sbrBadge.style.display = "inline-block";
+  }
+
+  // ── ROI vs Risk: real bubbles from INVESTMENTS, no fake companies ──
+  // Risk bucket is a simple, transparent proxy based on ROI itself (higher
+  // advertised ROI generally reflects a riskier underlying farm project) —
+  // there's no separate "risk score" field in the data yet, so this avoids
+  // inventing one while still being a fair, explainable placement.
+  var riskSvg = document.getElementById("roiRiskChart");
+  if (riskSvg) {
+    if (!INVESTMENTS.length) {
+      riskSvg.innerHTML = '<text x="200" y="120" text-anchor="middle" font-size="12" fill="var(--mid)">No investments yet</text>';
+    } else {
+      var roiVals = INVESTMENTS.map(function(i){ return i.roi; });
+      var minRoi = Math.min.apply(null, roiVals), maxRoi = Math.max.apply(null, roiVals);
+      var roiRange = (maxRoi - minRoi) || 1;
+      var maxInvested = Math.max.apply(null, INVESTMENTS.map(function(i){ return i.invested; })) || 1;
+      var chartW = 400, chartH = 240, padL = 44, padR = 20, padT = 20, padB = 30;
+
+      var svgHtml = '<line x1="'+padL+'" y1="'+padT+'" x2="'+(chartW-padR)+'" y2="'+padT+'" stroke="var(--divider)" stroke-width="1"/>'
+        + '<line x1="'+padL+'" y1="'+((padT+chartH-padB)/2)+'" x2="'+(chartW-padR)+'" y2="'+((padT+chartH-padB)/2)+'" stroke="var(--divider)" stroke-width="1"/>'
+        + '<line x1="'+padL+'" y1="'+(chartH-padB)+'" x2="'+(chartW-padR)+'" y2="'+(chartH-padB)+'" stroke="var(--divider)" stroke-width="1"/>'
+        + '<text x="'+(padL-6)+'" y="'+(padT+4)+'" text-anchor="end" font-size="9" fill="var(--mid)">'+maxRoi.toFixed(0)+'%</text>'
+        + '<text x="'+(padL-6)+'" y="'+(chartH-padB+4)+'" text-anchor="end" font-size="9" fill="var(--mid)">'+minRoi.toFixed(0)+'%</text>'
+        + '<text x="'+((padL+chartW-padR)/2)+'" y="'+(chartH-8)+'" text-anchor="middle" font-size="9" fill="var(--mid)">Lower ROI (lower risk) → Higher ROI (higher risk)</text>';
+
+      INVESTMENTS.forEach(function(inv, idx){
+        var x = padL + 30 + (idx * ((chartW-padL-padR-60) / Math.max(INVESTMENTS.length-1,1)));
+        var y = (chartH-padB) - ((inv.roi - minRoi)/roiRange) * (chartH-padT-padB);
+        var r = 8 + (inv.invested/maxInvested) * 14;
+        var shortName = inv.name.split(" ").slice(0,2).join(" ");
+        svgHtml += '<circle cx="'+x+'" cy="'+y+'" r="'+r+'" fill="'+inv.color+'" opacity=".25"/>'
+          + '<circle cx="'+x+'" cy="'+y+'" r="6" fill="'+inv.color+'"/>'
+          + '<text x="'+x+'" y="'+(y-r-4)+'" text-anchor="middle" font-size="9" fill="var(--charcoal)" font-weight="700">'+shortName+'</text>'
+          + '<text x="'+x+'" y="'+(y+r+12)+'" text-anchor="middle" font-size="8" fill="var(--mid)">'+inv.roi+'%</text>';
+      });
+      riskSvg.innerHTML = svgHtml;
+    }
+  }
 };
 
 /* ── ROI TABLE ── (populated by renderRoiTable() when faLoadWallet fires) ── */
@@ -8211,6 +8319,63 @@ async function loadBankAccounts() {
   updateWithdrawUI();
 }
 
+/* ── PROFILE PAGE ── */
+window.faLoadProfilePage = async function() {
+  if (!window.FA || !FA.isLoggedIn()) return;
+  const profile = FA.getProfile();
+  const session = FA.getSession();
+  if (!profile || !session) return;
+
+  const fullName = profile.full_name || "FarmAlly User";
+  const email    = (session.user && session.user.email) || "—";
+  const phone    = profile.phone || "Not provided";
+  const joined   = profile.created_at
+    ? new Date(profile.created_at).toLocaleDateString('en-NG', { day:'numeric', month:'long', year:'numeric' })
+    : "—";
+  const initials = fullName.split(" ").map(w => w[0]).join("").slice(0,2).toUpperCase();
+
+  const avatarEl = document.getElementById("profileAvatar"); if (avatarEl) avatarEl.textContent = initials;
+  const nameEl    = document.getElementById("profileFullName"); if (nameEl) nameEl.textContent = fullName;
+  const emailSubEl = document.getElementById("profileEmail"); if (emailSubEl) emailSubEl.textContent = email;
+  const dName  = document.getElementById("profileDetailName");   if (dName)  dName.textContent  = fullName;
+  const dEmail = document.getElementById("profileDetailEmail");  if (dEmail) dEmail.textContent = email;
+  const dPhone = document.getElementById("profileDetailPhone");  if (dPhone) dPhone.textContent = phone;
+  const dJoined = document.getElementById("profileDetailJoined"); if (dJoined) dJoined.textContent = joined;
+
+  const bankContainer = document.getElementById("profileBankAccounts");
+  if (bankContainer) {
+    bankContainer.innerHTML = '<div style="font-size:13px;color:var(--mid);padding:8px 0">Loading…</div>';
+    try {
+      const accounts = await FA.getBankAccounts();
+      if (!accounts.length) {
+        bankContainer.innerHTML = '<div style="font-size:13px;color:var(--mid);padding:8px 0">No bank account added yet.</div>';
+      } else {
+        bankContainer.innerHTML = accounts.map(a => `
+          <div style="display:flex;align-items:center;gap:12px;padding:12px 14px;border:1px solid var(--divider);border-radius:12px;">
+            <div style="font-size:20px;">🏦</div>
+            <div style="flex:1;min-width:0;">
+              <div style="font-size:14px;font-weight:700;color:var(--ink)">${a.bank_name} ****${String(a.account_number).slice(-4)}</div>
+              <div style="font-size:12px;color:var(--mid)">${a.account_name}</div>
+            </div>
+            <button onclick="profileDeleteBankAccount('${a.id}')" style="background:none;border:none;color:#E74C3C;font-size:12px;font-weight:700;cursor:pointer;padding:6px;">Remove</button>
+          </div>`).join("");
+      }
+    } catch (e) {
+      bankContainer.innerHTML = '<div style="font-size:13px;color:var(--mid);padding:8px 0">Couldn\'t load bank accounts.</div>';
+    }
+  }
+};
+
+async function profileDeleteBankAccount(id) {
+  if (!confirm("Remove this bank account? You'll need to re-add it to use it for withdrawals again.")) return;
+  try {
+    await FA.deleteBankAccount(id);
+    await window.faLoadProfilePage();
+  } catch (e) {
+    alert(e.message || "Couldn't remove account. Please try again.");
+  }
+}
+
 function setBank(id){
   wdBank=id;
   document.querySelectorAll(".bank-btn").forEach(b=>b.classList.remove("active"));
@@ -8290,6 +8455,61 @@ async function confirmWithdrawal(){
     btn.disabled = false; btn.textContent = originalLabel;
   }
 }
+
+/* ── SEND MONEY (peer-to-peer wallet transfer) ── */
+function openSendModal(){
+  document.getElementById("sendRecipientEmail").value = "";
+  document.getElementById("sendAmount").value = "";
+  document.getElementById("sendNote").value = "";
+  document.getElementById("sendMoneyError").style.display = "none";
+  document.getElementById("sendMoneySuccess").style.display = "none";
+  var available = window._liveWalletNaira || 0;
+  document.getElementById("sendAvailableHint").textContent = "Available: ₦" + available.toLocaleString();
+  document.getElementById("sendMoneyModalOverlay").style.display = "flex";
+}
+function closeSendModal(){
+  document.getElementById("sendMoneyModalOverlay").style.display = "none";
+}
+async function confirmSendMoney(){
+  const errEl = document.getElementById("sendMoneyError");
+  const okEl  = document.getElementById("sendMoneySuccess");
+  const btn   = document.getElementById("sendMoneyBtn");
+  errEl.style.display = "none"; okEl.style.display = "none";
+
+  const email  = document.getElementById("sendRecipientEmail").value.trim();
+  const amount = Number(document.getElementById("sendAmount").value);
+  const note   = document.getElementById("sendNote").value.trim();
+  const available = window._liveWalletNaira || 0;
+
+  if (!email || !/\S+@\S+\.\S+/.test(email)) {
+    errEl.textContent = "Enter a valid recipient email."; errEl.style.display = "block"; return;
+  }
+  if (!amount || amount <= 0) {
+    errEl.textContent = "Enter an amount to send."; errEl.style.display = "block"; return;
+  }
+  if (amount > available) {
+    errEl.textContent = "Amount exceeds your available balance."; errEl.style.display = "block"; return;
+  }
+
+  const originalLabel = btn.textContent;
+  btn.disabled = true; btn.textContent = "Sending…";
+  try {
+    const result = await FA.sendMoney(email, amount, note || null);
+    okEl.textContent = "Sent ₦" + amount.toLocaleString() + " to " + result.recipient_name + "!";
+    okEl.style.display = "block";
+    document.getElementById("sendAmount").value = "";
+    document.getElementById("sendNote").value = "";
+    // Refresh wallet balance + transaction history right away
+    if (typeof window.faLoadWallet === "function") window.faLoadWallet();
+    setTimeout(closeSendModal, 1800);
+  } catch (e) {
+    errEl.textContent = e.message || "Couldn't send money. Please try again.";
+    errEl.style.display = "block";
+  } finally {
+    btn.disabled = false; btn.textContent = originalLabel;
+  }
+}
+
 function updateWithdrawUI(){
   const amt=document.getElementById("wdAmount").value;
   const sum=document.getElementById("wdSummary");
@@ -8341,6 +8561,62 @@ drawDonut("donut1","donut1Legend",ALLOCATION,130,52);
 drawDonut2();
 </script>
 
+      </section>
+
+      <!-- ═══════════════════════════════════════════════════════
+           PAGE: MY PROFILE
+      ═══════════════════════════════════════════════════════ -->
+      <section id="profile-page" class="page" data-title="My Profile">
+        <div style="max-width:640px;margin:0 auto;padding:20px 16px 40px;">
+
+          <div class="page-title" style="margin-bottom:16px;">
+            <h1>My Profile</h1>
+            <p>Your account details and saved bank accounts</p>
+          </div>
+
+          <!-- IDENTITY CARD -->
+          <div class="card" style="display:flex;align-items:center;gap:16px;margin-bottom:20px;">
+            <div id="profileAvatar" style="width:56px;height:56px;border-radius:50%;background:var(--farm-green);color:#fff;display:flex;align-items:center;justify-content:center;font-family:'Sora',sans-serif;font-weight:800;font-size:22px;flex-shrink:0;">U</div>
+            <div style="flex:1;min-width:0;">
+              <div id="profileFullName" style="font-family:'Sora',sans-serif;font-weight:800;font-size:18px;color:var(--ink);">—</div>
+              <div id="profileEmail" style="font-size:13px;color:var(--mid);margin-top:2px;">—</div>
+            </div>
+          </div>
+
+          <!-- ACCOUNT DETAILS -->
+          <div class="card" style="margin-bottom:20px;">
+            <div class="sh"><div><h2>Account Details</h2><p>From your registration</p></div></div>
+            <div style="display:flex;flex-direction:column;gap:14px;margin-top:16px;">
+              <div style="display:flex;justify-content:space-between;align-items:center;">
+                <span style="font-size:13px;color:var(--mid);">Full Name</span>
+                <span id="profileDetailName" style="font-size:13px;font-weight:700;color:var(--ink);text-align:right;">—</span>
+              </div>
+              <div style="display:flex;justify-content:space-between;align-items:center;">
+                <span style="font-size:13px;color:var(--mid);">Email Address</span>
+                <span id="profileDetailEmail" style="font-size:13px;font-weight:700;color:var(--ink);text-align:right;word-break:break-all;">—</span>
+              </div>
+              <div style="display:flex;justify-content:space-between;align-items:center;">
+                <span style="font-size:13px;color:var(--mid);">Phone Number</span>
+                <span id="profileDetailPhone" style="font-size:13px;font-weight:700;color:var(--ink);text-align:right;">—</span>
+              </div>
+              <div style="display:flex;justify-content:space-between;align-items:center;">
+                <span style="font-size:13px;color:var(--mid);">Member Since</span>
+                <span id="profileDetailJoined" style="font-size:13px;font-weight:700;color:var(--ink);text-align:right;">—</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- SAVED BANK ACCOUNTS -->
+          <div class="card" style="margin-bottom:20px;">
+            <div class="sh"><div><h2>Bank Accounts</h2><p>Used for withdrawals</p></div></div>
+            <div style="display:flex;flex-direction:column;gap:10px;margin-top:14px;" id="profileBankAccounts"></div>
+            <button class="add-acct" style="margin-top:10px;width:100%;" onclick="openAddBankModal()">+ Add New Account</button>
+          </div>
+
+          <!-- LOG OUT -->
+          <button class="btn-dark-full" style="background:#fff;color:#E74C3C;border:1.5px solid #FEE2E2;" onclick="if(confirm('Are you sure you want to log out?')) FA.signOut();">Log Out</button>
+
+        </div>
       </section>
 
       <!-- ═══════════════════════════════════════════════════════
@@ -8449,7 +8725,7 @@ drawDonut2();
     Shop
   </button>
   <button class="mobile-nav-btn" id="mobile-nav-auth-btn" data-route="login">
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
+    <svg id="mobile-nav-auth-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
     <span id="mobile-nav-auth-label">Login</span>
   </button>
 
@@ -8478,6 +8754,7 @@ drawDonut2();
       marketplace:     { sectionId: 'marketplace-page',     title: 'Marketplace',         bodyClass: 'route-marketplace',     appChrome: true  },
       wallet:          { sectionId: 'wallet-page',          title: 'Wallet & Portfolio',  bodyClass: 'route-wallet',          appChrome: true  },
       shop:            { sectionId: 'shop-page',            title: 'Shop',                bodyClass: 'route-shop',            appChrome: true  },
+      profile:         { sectionId: 'profile-page',         title: 'My Profile',          bodyClass: 'route-profile',         appChrome: true  },
     };
 
     const DEFAULT_ROUTE = 'landing';
@@ -8519,21 +8796,22 @@ drawDonut2();
         if (loginScreen) loginScreen.classList.add('active');
       }
 
-      /* Update mobile nav Login → Logout based on real Supabase session */
+      /* Update mobile nav Login → Profile based on real Supabase session */
       var authBtn = document.getElementById('mobile-nav-auth-btn');
       var authLabel = document.getElementById('mobile-nav-auth-label');
+      var authIcon = document.getElementById('mobile-nav-auth-icon');
       if (authBtn && authLabel) {
         var loggedIn = window.FA && FA.isLoggedIn();
         if (loggedIn) {
-          authLabel.textContent = 'Logout';
-          authBtn.onclick = function() {
-            if (window.FA) FA.signOut();
-            else navigate('landing');
-          };
+          authLabel.textContent = 'Profile';
+          authBtn.onclick = null;
+          authBtn.dataset.route = 'profile';
+          if (authIcon) authIcon.innerHTML = '<circle cx="12" cy="8" r="4"/><path d="M4 21v-1a8 8 0 0 1 16 0v1"/>';
         } else {
           authLabel.textContent = 'Login';
           authBtn.onclick = null;
           authBtn.dataset.route = 'login';
+          if (authIcon) authIcon.innerHTML = '<path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/>';
         }
       }
 
@@ -8611,6 +8889,7 @@ drawDonut2();
       if (route === 'marketplace') setTimeout(window.faLoadMarketplace, 100);
       if (route === 'shop')        setTimeout(window.shopLoad,           80);
       if (route === 'wallet')      setTimeout(window.faLoadWallet,      100);
+      if (route === 'profile')    setTimeout(window.faLoadProfilePage,  100);
     };
   });
 </script>
@@ -8896,6 +9175,37 @@ drawDonut2();
   </div>
   <div class="um-drawer-body" id="um-drawer-body"><!-- filled by JS --></div>
   <div class="um-drawer-footer" id="um-drawer-footer"><!-- filled by JS --></div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════
+     SEND MONEY MODAL
+═══════════════════════════════════════════════════════════════ -->
+<div id="sendMoneyModalOverlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:2200;align-items:center;justify-content:center;padding:16px;">
+  <div style="background:#fff;border-radius:20px;padding:28px 24px 24px;max-width:380px;width:100%;box-shadow:0 24px 64px rgba(0,0,0,0.22);">
+    <div style="font-family:'Sora',sans-serif;font-weight:800;font-size:18px;color:var(--ink);margin-bottom:4px;">Send Money</div>
+    <div style="font-size:13px;color:var(--mid);margin-bottom:20px;">Send funds instantly to another FarmAlly user. This can't be undone.</div>
+
+    <label class="form-section-lbl">RECIPIENT'S EMAIL</label>
+    <input type="email" id="sendRecipientEmail" placeholder="friend@example.com" style="width:100%;padding:12px 14px;border:1px solid var(--divider);border-radius:10px;font-size:14px;margin-bottom:14px;font-family:inherit;" />
+
+    <label class="form-section-lbl">AMOUNT</label>
+    <div class="amt-wrap" style="margin-bottom:4px;">
+      <span class="amt-prefix">₦</span>
+      <input type="number" id="sendAmount" class="amt-input" placeholder="0.00" />
+    </div>
+    <div style="font-size:12px;color:var(--mid);margin-bottom:14px;" id="sendAvailableHint"></div>
+
+    <label class="form-section-lbl">NOTE (OPTIONAL)</label>
+    <input type="text" id="sendNote" placeholder="e.g. For the farm co-investment" style="width:100%;padding:12px 14px;border:1px solid var(--divider);border-radius:10px;font-size:14px;margin-bottom:8px;font-family:inherit;" />
+
+    <div id="sendMoneyError" style="display:none;color:#E74C3C;font-size:13px;margin-bottom:8px;"></div>
+    <div id="sendMoneySuccess" style="display:none;color:#16A34A;font-size:13px;margin-bottom:8px;"></div>
+
+    <div style="display:flex;gap:10px;margin-top:16px;">
+      <button onclick="closeSendModal()" style="flex:1;padding:12px;border-radius:10px;border:1px solid var(--divider);background:#fff;color:var(--ink);font-weight:700;font-size:14px;">Cancel</button>
+      <button id="sendMoneyBtn" onclick="confirmSendMoney()" style="flex:1;padding:12px;border-radius:10px;border:none;background:var(--ink);color:#fff;font-weight:700;font-size:14px;">Send</button>
+    </div>
+  </div>
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════════

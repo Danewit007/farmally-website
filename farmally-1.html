@@ -8320,11 +8320,20 @@ async function loadBankAccounts() {
 }
 
 /* ── PROFILE PAGE ── */
-window.faLoadProfilePage = async function() {
+window.faLoadProfilePage = async function(retryCount) {
+  retryCount = retryCount || 0;
   if (!window.FA || !FA.isLoggedIn()) return;
   const profile = FA.getProfile();
   const session = FA.getSession();
-  if (!profile || !session) return;
+  if (!profile || !session) {
+    // Session/profile can still be loading right after login or a page
+    // refresh — retry a few times before giving up, instead of silently
+    // leaving every field blank.
+    if (retryCount < 5) {
+      setTimeout(function(){ window.faLoadProfilePage(retryCount + 1); }, 400);
+    }
+    return;
+  }
 
   const fullName = profile.full_name || "FarmAlly User";
   const email    = (session.user && session.user.email) || "—";

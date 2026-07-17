@@ -15,7 +15,7 @@
        as index.html — all logout / back-button redirects update automatically. ── */
   window.FARMALLY_APP_URL = 'farmally.html';
 
-  (function() {
+  function _initFA() {
     // ── Supabase client ──────────────────────────────────────
     const SUPABASE_URL  = 'https://gtjabetlqhirdwgzpvql.supabase.co';
     const SUPABASE_ANON = 'sb_publishable_roWLHDafNUdKLoQ91U4NPQ_pyUM1U7I';
@@ -57,6 +57,9 @@
       _profile = null;
       window.location.hash = '';
       window.location.href = window.FARMALLY_APP_URL;
+    }
+
+    async function loadProfile() {
       if (!_session) return null;
       const { data, error } = await _sb.from('profiles')
         .select('*')
@@ -355,8 +358,23 @@
 
     // Auto-init after DOM loads
     document.addEventListener('DOMContentLoaded', init);
+  }
 
-  })();
+  // BUG FIX #4: the Supabase SDK loads from an external CDN <script> tag
+  // above. On a slow/unstable connection that request can still be in
+  // flight when this block used to run, so `supabase` wasn't defined yet,
+  // _initFA() threw immediately, and window.FA never got set — every
+  // button on the page then failed with "FA is not defined". Poll for the
+  // SDK instead of assuming it's ready; only give up after a few seconds.
+  (function _waitForSDK(attemptsLeft) {
+    if (typeof supabase !== 'undefined') { _initFA(); return; }
+    if (attemptsLeft <= 0) {
+      window.FA_INIT_ERROR = 'Could not load required scripts. Check your connection and reload the page.';
+      console.error(window.FA_INIT_ERROR);
+      return;
+    }
+    setTimeout(function() { _waitForSDK(attemptsLeft - 1); }, 300);
+  })(20);
   </script>
 
   <!-- Google Fonts -->
@@ -2709,6 +2727,15 @@
         card.classList.add('admin-login-shake');
         setTimeout(function() { card.classList.remove('admin-login-shake'); }, 500);
       }
+    }
+
+    if (typeof FA === 'undefined') {
+      // Belt-and-suspenders: _waitForSDK should already have retried the
+      // SDK load by now, but if the connection is bad enough that it's
+      // still not ready, fail with a clear message instead of a raw
+      // "FA is not defined" error.
+      showFailure(window.FA_INIT_ERROR || 'Still loading — please wait a moment and try again.');
+      return;
     }
 
     try {

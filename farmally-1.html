@@ -3744,6 +3744,11 @@
         <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>
         Wallet &amp; Portfolio
       </button>
+      <button class="sidebar-link" data-route="profile">
+        <!-- Profile icon -->
+        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+        Profile
+      </button>
 
       <!-- Admin (hidden from regular users, shown via secret route) -->
       <div class="sidebar-label" style="margin-top:8px;display:none;" id="admin-sidebar-section">Admin</div>
@@ -5585,13 +5590,13 @@ window.faLoadMarketplace = async function() {
         roiLabel: l.roi_percent + '% p.a.',
         risk: riskMap[l.risk_level] || 'Medium',
         riskScore: riskScoreMap[l.risk_level] || 2,
-        duration: l.duration_months + ' months',
-        minInvest: FA.koboToNaira(l.min_investment_kobo),
-        maxInvest: FA.koboToNaira(l.max_investment_kobo),
-        totalSlots: l.total_slots,
-        filledSlots: l.filled_slots,
-        fundingTarget: FA.koboToNaira(l.funding_target_kobo),
-        fundingRaised: FA.koboToNaira(l.funding_raised_kobo),
+        duration: (l.duration_months ? l.duration_months : 12) + ' months',
+        minInvest: FA.koboToNaira(l.min_investment_kobo) || 0,
+        maxInvest: FA.koboToNaira(l.max_investment_kobo) || (FA.koboToNaira(l.min_investment_kobo) || 0) * 10,
+        totalSlots: l.total_slots || 0,
+        filledSlots: l.filled_slots || 0,
+        fundingTarget: FA.koboToNaira(l.funding_target_kobo) || 0,
+        fundingRaised: FA.koboToNaira(l.funding_raised_kobo) || 0,
         insured: l.is_insured,
         insuranceProvider: l.insurance_provider,
         verified: true,
@@ -6400,7 +6405,7 @@ let state = {
 /* ─────────── HELPERS ─────────── */
 const fmt = n => n>=1e6?`${(n/1e6).toFixed(1)}M`:n>=1e3?`${(n/1e3).toFixed(0)}K`:n.toLocaleString();
 const fmtFull = n => `₦${n.toLocaleString()}`;
-const pct = (a,b) => Math.min(Math.round((a/b)*100),100);
+const pct = (a,b) => { const v = Math.round((a/b)*100); return (!b || !isFinite(v)) ? 0 : Math.min(v,100); };
 const riskLabel = score => score===1?"Low":score===2?"Medium":"High";
 
 function tagColor(t, inv) {
@@ -6855,6 +6860,8 @@ function renderCheckoutStep() {
   const durationMonths = parseInt(inv.duration);
   const expectedReturn = Math.round(amount*(inv.roi/100)*(durationMonths/12));
   const totalPayout = amount+expectedReturn;
+  const walletBalance = (window.FA && FA.isLoggedIn()) ? FA.getWalletNaira() : 0;
+  const canAfford = amount <= walletBalance;
   const form = document.getElementById("checkout-form");
 
   // Farm summary bar (always)
@@ -6891,6 +6898,9 @@ function renderCheckoutStep() {
             </button>
           `).join("")}
         </div>
+        <div class="co-wallet-balance">Wallet Balance: <strong>${fmtFull(walletBalance)}</strong>
+          ${!canAfford ? `<div class="co-insufficient">Insufficient balance for this investment (${fmtFull(amount)} needed)</div>` : ""}
+        </div>
         <div class="projection-box">
           <div style="font-size:12px;font-weight:700;color:#6C757D;margin-bottom:12px;">Projected Returns</div>
           <div class="projection-row">
@@ -6906,7 +6916,7 @@ function renderCheckoutStep() {
             <span id="proj-total" style="font-size:13px;font-weight:800;color:#0F1A0D;font-family:'Sora',sans-serif;">${fmtFull(totalPayout)}</span>
           </div>
         </div>
-        <button onclick="checkoutNext()" style="width:100%;padding:16px;background:${inv.color};color:#fff;border:none;border-radius:14px;font-weight:800;font-size:15px;cursor:pointer;font-family:'Sora',sans-serif;">Continue →</button>
+        <button id="checkout-continue-btn" ${canAfford?"":"disabled"} onclick="checkoutNext()" style="width:100%;padding:16px;background:${canAfford?inv.color:"#E9ECEF"};color:${canAfford?"#fff":"#ADB5BD"};border:none;border-radius:14px;font-weight:800;font-size:15px;cursor:${canAfford?"pointer":"default"};font-family:'Sora',sans-serif;">${canAfford?"Continue →":"Insufficient Balance"}</button>
       </div>
     `;
   }
@@ -6989,6 +6999,22 @@ function updateAmount(val) {
     btn.style.background=v===p?inv.lightColor:"#fff";
     btn.style.color=v===p?inv.color:"#6C757D";
   });
+  // re-check affordability against wallet balance and refresh the warning/button
+  const walletBalance = (window.FA && FA.isLoggedIn()) ? FA.getWalletNaira() : 0;
+  const canAfford = v <= walletBalance;
+  const balanceBox = document.querySelector(".co-wallet-balance");
+  if(balanceBox) {
+    balanceBox.innerHTML = `Wallet Balance: <strong>${fmtFull(walletBalance)}</strong>` +
+      (!canAfford ? `<div class="co-insufficient">Insufficient balance for this investment (${fmtFull(v)} needed)</div>` : "");
+  }
+  const contBtn = document.getElementById("checkout-continue-btn");
+  if(contBtn) {
+    contBtn.disabled = !canAfford;
+    contBtn.textContent = canAfford ? "Continue →" : "Insufficient Balance";
+    contBtn.style.background = canAfford ? inv.color : "#E9ECEF";
+    contBtn.style.color = canAfford ? "#fff" : "#ADB5BD";
+    contBtn.style.cursor = canAfford ? "pointer" : "default";
+  }
 }
 function setPreset(p){
   state.checkoutAmount=p;
@@ -6997,6 +7023,11 @@ function setPreset(p){
   updateAmount(p);
 }
 function checkoutNext(){
+  if(state.checkoutStep===1) {
+    const inv=state.selected;
+    const walletBalance = (window.FA && FA.isLoggedIn()) ? FA.getWalletNaira() : 0;
+    if(state.checkoutAmount > walletBalance) return; // guard: never let an unaffordable amount through
+  }
   if(state.checkoutStep<3){state.checkoutStep++;renderCheckout();}
 }
 function checkoutBack(){
@@ -7009,10 +7040,17 @@ function pinKey(k){
 }
 async function checkoutAuthorise(){
   if(state.checkoutPin.length<4||state.checkoutLoading) return;
-  state.checkoutLoading=true;
-  renderCheckoutStep();
   const inv=state.selected;
   const amount=state.checkoutAmount;
+  const walletBalance = (window.FA && FA.isLoggedIn()) ? FA.getWalletNaira() : 0;
+  if(amount > walletBalance) {
+    alert("Insufficient wallet balance for this investment. Please top up your wallet and try again.");
+    state.checkoutStep=1;
+    renderCheckout();
+    return;
+  }
+  state.checkoutLoading=true;
+  renderCheckoutStep();
   const dm=parseInt(inv.duration);
   const expectedReturn=Math.round(amount*(inv.roi/100)*(dm/12));
   const totalPayout=amount+expectedReturn;
@@ -7098,6 +7136,30 @@ window.setMarketplaceListings = function(data) {
 /* ─────────── INIT ─────────── */
 showPage("browse");
 renderBrowse();
+
+/* ─────────── GLOBAL EXPORTS ─────────────────────────────────
+   The card/detail/checkout HTML built above uses inline
+   onclick="showDetail(...)" / oninput="calcROI(...)" etc.
+   Inline event-handler attributes run in the GLOBAL scope, not
+   inside this closure — so every function referenced that way
+   must be attached to window, or the browser throws a silent
+   "X is not defined" ReferenceError on click (visible only in
+   the console) and nothing happens. This was why "Invest from"
+   and every other marketplace button appeared dead.
+──────────────────────────────────────────────────────────── */
+window.showDetail        = showDetail;
+window.showBrowse        = showBrowse;
+window.showCheckout      = showCheckout;
+window.checkoutNext      = checkoutNext;
+window.checkoutBack      = checkoutBack;
+window.checkoutAuthorise = checkoutAuthorise;
+window.pinKey            = pinKey;
+window.setPreset         = setPreset;
+window.updateAmount      = updateAmount;
+window.calcROI           = calcROI;
+window.setCategory       = setCategory;
+window.setRisk           = setRisk;
+window.doneBrowse        = doneBrowse;
 };
 document.addEventListener("DOMContentLoaded", window.marketplaceInit);
 })();

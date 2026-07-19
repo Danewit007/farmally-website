@@ -362,6 +362,21 @@
         } else {
           _profile = null;
         }
+
+        // ── Password recovery link clicked ──────────────────────
+        // Supabase fires this the moment someone lands on the site via a
+        // password-reset email link. Force them straight to the "set new
+        // password" screen, regardless of whatever page they'd normally
+        // land on — this always takes priority.
+        if (event === 'PASSWORD_RECOVERY') {
+          FarmAlly.navigate('login');
+          setTimeout(function() {
+            var screens = document.querySelectorAll('#auth-screens-root .screen');
+            screens.forEach(function(s) { s.classList.remove('active'); });
+            var resetScreen = document.getElementById('screen-reset');
+            if (resetScreen) resetScreen.classList.add('active');
+          }, 50);
+        }
       });
     }
 
@@ -4784,7 +4799,9 @@
         </div>
       </div>
 
-      <button class="btn btn-primary" style="margin-top:8px" onclick="authShowScreen('success')">
+      <div id="resetError" style="display:none;color:#E74C3C;font-size:13px;margin-bottom:8px;"></div>
+
+      <button class="btn btn-primary" style="margin-top:8px" id="resetSubmitBtn" onclick="faHandleResetPassword()">
         Reset Password
         <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10.293 3.293a1 1 0 011.414 0l6 6a1 1 0 010 1.414l-6 6a1 1 0 01-1.414-1.414L14.586 11H3a1 1 0 110-2h11.586l-4.293-4.293a1 1 0 010-1.414z" clip-rule="evenodd"/></svg>
       </button>
@@ -6571,7 +6588,7 @@ function buildCard(inv, i) {
   const insuredBadge = inv.insured ? `<div class="card-insured-badge" style="border:1px solid ${inv.color};"><span style="font-size:10px;">🛡️</span><span style="font-size:9px;font-weight:700;color:${inv.color};">Insured</span></div>` : "";
   const riskSquares = [1,2,3].map(n=>`<span class="risk-sq" style="background:${n<=inv.riskScore?rm.dot:"#E9ECEF"};"></span>`).join("");
   return `
-    <div class="inv-card-wrap" style="animation-delay:${i*60}ms;" onclick="showDetail(INVESTMENTS.find(x=>x.id===${inv.id}))">
+    <div class="inv-card-wrap" style="animation-delay:${i*60}ms;" onclick="showDetail(INVESTMENTS.find(x=>x.id==='${inv.id}'))">
       <div class="card-header" style="background:${inv.lightColor};">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;">
           <span class="card-emoji">${inv.emoji}</span>

@@ -148,6 +148,25 @@
       return data;
     }
 
+    // ── Transaction PIN ──────────────────────────────────────
+    // The PIN itself is never stored or compared client-side — it's hashed
+    // and checked inside Postgres via security-definer RPCs, so the plaintext
+    // PIN only ever exists transiently in the request payload over TLS.
+    async function setTransactionPin(pin) {
+      const { error } = await _sb.rpc('set_transaction_pin', { new_pin: pin });
+      if (error) throw error;
+    }
+    async function hasTransactionPin() {
+      const { data, error } = await _sb.rpc('has_transaction_pin');
+      if (error) throw error;
+      return !!data;
+    }
+    async function verifyTransactionPin(pin) {
+      const { data, error } = await _sb.rpc('verify_transaction_pin', { pin_attempt: pin });
+      if (error) throw error;
+      return !!data;
+    }
+
     // ── Shop ─────────────────────────────────────────────────
     async function getProducts(categorySlug) {
       // When filtering by category we use !inner (INNER JOIN) so that
@@ -297,7 +316,15 @@
       const { data: { session } } = await _sb.auth.getSession();
       if (session) {
         _session = session;
-        await loadProfile();
+        try {
+          await loadProfile();
+        } catch (e) {
+          console.error('[FarmAlly] Failed to load profile during session restore:', e);
+          // Don't let this abort the rest of init() — the session itself is
+          // still valid, so UI updates and route data-loaders below should
+          // still run. faLoadProfilePage()'s own retry loop will pick up
+          // the profile once it's fetchable.
+        }
         // Redirect to dashboard if on landing/login
         const hash = window.location.hash.replace('#', '');
         let targetRoute = hash;
@@ -325,7 +352,11 @@
         _session = session;
 
         if (session) {
-          await loadProfile();
+          try {
+            await loadProfile();
+          } catch (e) {
+            console.error('[FarmAlly] Failed to load profile on auth state change:', e);
+          }
           _updateUIForUser();
 
           // ── OAuth / fresh sign-in redirect ──────────────────────
@@ -508,6 +539,7 @@
       sendMoney,
       // Investments
       getFarmListings, getUserInvestments, invest,
+      setTransactionPin, hasTransactionPin, verifyTransactionPin,
       // Shop
       getProducts, getCategories, getUserOrders, toggleWishlist,
       createOrder, updateOrderVendyRef, markOrderPaid,
@@ -7027,11 +7059,29 @@ function setPreset(p){
   if(input) input.value=p;
   updateAmount(p);
 }
-function checkoutNext(){
+async function checkoutNext(){
   if(state.checkoutStep===1) {
     const inv=state.selected;
     const walletBalance = (window.FA && FA.isLoggedIn()) ? FA.getWalletNaira() : 0;
     if(state.checkoutAmount > walletBalance) return; // guard: never let an unaffordable amount through
+  }
+  if(state.checkoutStep===2) {
+    // About to enter the PIN-authorisation step — make sure a PIN actually
+    // exists to verify against. Otherwise send the user to set one up
+    // instead of letting them "authorise" with a PIN nothing checks.
+    try {
+      const hasPin = await FA.hasTransactionPin();
+      if(!hasPin) {
+        alert("You need to set up a Transaction PIN before you can invest. Taking you to your Profile to set one up now.");
+        if(window.FarmAlly && typeof window.FarmAlly.navigate === "function") {
+          window.FarmAlly.navigate("profile");
+        }
+        return;
+      }
+    } catch(e) {
+      alert("Couldn't verify your Transaction PIN setup. Please try again.");
+      return;
+    }
   }
   if(state.checkoutStep<3){state.checkoutStep++;renderCheckout();}
 }
@@ -7056,6 +7106,25 @@ async function checkoutAuthorise(){
   }
   state.checkoutLoading=true;
   renderCheckoutStep();
+
+  // Verify the PIN server-side before touching any money. The hash
+  // comparison happens inside Postgres — the client never sees or stores it.
+  try {
+    const pinOk = await FA.verifyTransactionPin(state.checkoutPin);
+    if(!pinOk) {
+      state.checkoutLoading=false;
+      state.checkoutPin="";
+      renderCheckoutStep();
+      alert("Incorrect PIN. Please try again.");
+      return;
+    }
+  } catch(e) {
+    state.checkoutLoading=false;
+    renderCheckoutStep();
+    alert("Couldn't verify your PIN. Please try again.");
+    return;
+  }
+
   const dm=parseInt(inv.duration);
   const expectedReturn=Math.round(amount*(inv.roi/100)*(dm/12));
   const totalPayout=amount+expectedReturn;
@@ -8406,7 +8475,13 @@ async function loadBankAccounts() {
 /* ── PROFILE PAGE ── */
 window.faLoadProfilePage = async function(retryCount) {
   retryCount = retryCount || 0;
-  if (!window.FA || !FA.isLoggedIn()) return;
+  if (!window.FA || !FA.isLoggedIn()) {
+    const nameEl = document.getElementById("profileFullName");
+    const emailEl = document.getElementById("profileEmail");
+    if (nameEl) nameEl.textContent = "Not logged in";
+    if (emailEl) emailEl.textContent = "Please log in to view your profile.";
+    return;
+  }
   const profile = FA.getProfile();
   const session = FA.getSession();
   if (!profile || !session) {
@@ -8415,6 +8490,12 @@ window.faLoadProfilePage = async function(retryCount) {
     // leaving every field blank.
     if (retryCount < 5) {
       setTimeout(function(){ window.faLoadProfilePage(retryCount + 1); }, 400);
+    } else {
+      const nameEl = document.getElementById("profileFullName");
+      const emailEl = document.getElementById("profileEmail");
+      if (nameEl) nameEl.textContent = "Couldn't load profile";
+      if (emailEl) emailEl.textContent = "Please refresh the page and try again.";
+      console.error('[FarmAlly] faLoadProfilePage gave up after retries — profile:', profile, 'session:', session);
     }
     return;
   }
@@ -8457,6 +8538,20 @@ window.faLoadProfilePage = async function(retryCount) {
       bankContainer.innerHTML = '<div style="font-size:13px;color:var(--mid);padding:8px 0">Couldn\'t load bank accounts.</div>';
     }
   }
+
+  const pinStatusEl = document.getElementById("profilePinStatus");
+  const pinBtnEl = document.getElementById("profilePinBtn");
+  if (pinStatusEl && pinBtnEl) {
+    pinStatusEl.textContent = "Checking…";
+    try {
+      const hasPin = await FA.hasTransactionPin();
+      pinStatusEl.textContent = hasPin ? "PIN is set" : "No PIN set yet — required before you can invest";
+      pinStatusEl.style.color = hasPin ? "" : "#E74C3C";
+      pinBtnEl.textContent = hasPin ? "Change PIN" : "Set PIN";
+    } catch (e) {
+      pinStatusEl.textContent = "Couldn't check PIN status.";
+    }
+  }
 };
 
 async function profileDeleteBankAccount(id) {
@@ -8466,6 +8561,47 @@ async function profileDeleteBankAccount(id) {
     await window.faLoadProfilePage();
   } catch (e) {
     alert(e.message || "Couldn't remove account. Please try again.");
+  }
+}
+
+/* ── SET / CHANGE TRANSACTION PIN ── */
+async function openPinModal(){
+  document.getElementById("pinNewInput").value = "";
+  document.getElementById("pinConfirmInput").value = "";
+  document.getElementById("pinModalError").style.display = "none";
+  try {
+    const hasPin = await FA.hasTransactionPin();
+    document.getElementById("pinModalTitle").textContent = hasPin ? "Change Transaction PIN" : "Set Transaction PIN";
+  } catch (e) { /* default title already says "Set" */ }
+  document.getElementById("pinModalOverlay").style.display = "flex";
+}
+function closePinModal(){
+  document.getElementById("pinModalOverlay").style.display = "none";
+}
+async function savePinFromModal(){
+  const errEl = document.getElementById("pinModalError");
+  const newPin = document.getElementById("pinNewInput").value.trim();
+  const confirmPin = document.getElementById("pinConfirmInput").value.trim();
+  errEl.style.display = "none";
+  if (!/^\d{4}$/.test(newPin)) {
+    errEl.textContent = "PIN must be exactly 4 digits."; errEl.style.display = "block"; return;
+  }
+  if (newPin !== confirmPin) {
+    errEl.textContent = "PINs don't match."; errEl.style.display = "block"; return;
+  }
+  if (/^(\d)\1{3}$/.test(newPin) || "0123456789".includes(newPin) || "9876543210".includes(newPin)) {
+    errEl.textContent = "Please choose a less predictable PIN (avoid 1111, 1234, etc.)."; errEl.style.display = "block"; return;
+  }
+  const btn = document.getElementById("savePinBtn");
+  btn.disabled = true; btn.textContent = "Saving…";
+  try {
+    await FA.setTransactionPin(newPin);
+    closePinModal();
+    await window.faLoadProfilePage();
+  } catch (e) {
+    errEl.textContent = e.message || "Couldn't save PIN. Please try again."; errEl.style.display = "block";
+  } finally {
+    btn.disabled = false; btn.textContent = "Save PIN";
   }
 }
 
@@ -8704,6 +8840,18 @@ drawDonut2();
             <div class="sh"><div><h2>Bank Accounts</h2><p>Used for withdrawals</p></div></div>
             <div style="display:flex;flex-direction:column;gap:10px;margin-top:14px;" id="profileBankAccounts"></div>
             <button class="add-acct" style="margin-top:10px;width:100%;" onclick="openAddBankModal()">+ Add New Account</button>
+          </div>
+
+          <!-- SECURITY: TRANSACTION PIN -->
+          <div class="card" style="margin-bottom:20px;">
+            <div class="sh"><div><h2>Security</h2><p>Required to authorise investments &amp; withdrawals</p></div></div>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-top:14px;">
+              <div>
+                <div style="font-size:13px;font-weight:700;color:var(--ink);">Transaction PIN</div>
+                <div id="profilePinStatus" style="font-size:12px;color:var(--mid);margin-top:2px;">Checking…</div>
+              </div>
+              <button id="profilePinBtn" class="add-acct" style="padding:10px 16px;" onclick="openPinModal()">Set PIN</button>
+            </div>
           </div>
 
           <!-- LOG OUT -->
@@ -9323,6 +9471,29 @@ drawDonut2();
     <div style="display:flex;gap:10px;margin-top:16px;">
       <button onclick="closeAddBankModal()" style="flex:1;padding:12px;border-radius:10px;border:1px solid var(--divider);background:#fff;color:var(--ink);font-weight:700;font-size:14px;">Cancel</button>
       <button id="saveBankBtn" onclick="saveBankAccount()" style="flex:1;padding:12px;border-radius:10px;border:none;background:var(--ink);color:#fff;font-weight:700;font-size:14px;">Save Account</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════
+     SET / CHANGE TRANSACTION PIN MODAL
+═══════════════════════════════════════════════════════════════ -->
+<div id="pinModalOverlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:2200;align-items:center;justify-content:center;padding:16px;">
+  <div style="background:#fff;border-radius:20px;padding:28px 24px 24px;max-width:380px;width:100%;box-shadow:0 24px 64px rgba(0,0,0,0.22);">
+    <div id="pinModalTitle" style="font-family:'Sora',sans-serif;font-weight:800;font-size:18px;color:var(--ink);margin-bottom:4px;">Set Transaction PIN</div>
+    <div style="font-size:13px;color:var(--mid);margin-bottom:20px;">This 4-digit PIN authorises investments and withdrawals. Don't share it with anyone, including FarmAlly staff.</div>
+
+    <label class="form-section-lbl">NEW PIN</label>
+    <input type="password" id="pinNewInput" placeholder="••••" inputmode="numeric" maxlength="4" style="width:100%;padding:12px 14px;border:1px solid var(--divider);border-radius:10px;font-size:16px;letter-spacing:6px;margin-bottom:14px;font-family:inherit;text-align:center;" />
+
+    <label class="form-section-lbl">CONFIRM PIN</label>
+    <input type="password" id="pinConfirmInput" placeholder="••••" inputmode="numeric" maxlength="4" style="width:100%;padding:12px 14px;border:1px solid var(--divider);border-radius:10px;font-size:16px;letter-spacing:6px;margin-bottom:8px;font-family:inherit;text-align:center;" />
+
+    <div id="pinModalError" style="display:none;color:#E74C3C;font-size:13px;margin-bottom:8px;"></div>
+
+    <div style="display:flex;gap:10px;margin-top:16px;">
+      <button onclick="closePinModal()" style="flex:1;padding:12px;border-radius:10px;border:1px solid var(--divider);background:#fff;color:var(--ink);font-weight:700;font-size:14px;">Cancel</button>
+      <button id="savePinBtn" onclick="savePinFromModal()" style="flex:1;padding:12px;border-radius:10px;border:none;background:var(--ink);color:#fff;font-weight:700;font-size:14px;">Save PIN</button>
     </div>
   </div>
 </div>

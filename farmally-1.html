@@ -6543,6 +6543,10 @@ function showSuccess(data) {
   state.page="success";
   renderSuccess(data);
   showPage("success");
+  // Refresh the Wallet page's numbers in the background now, so they're
+  // already current whether the user clicks "View Portfolio" here or
+  // navigates to Wallet some other way afterward — no manual refresh needed.
+  if (typeof window.faLoadWallet === "function") window.faLoadWallet();
 }
 function clearFilters() {
   state.search=""; state.category="All"; state.risk="All Risks";
@@ -7168,7 +7172,7 @@ function renderSuccess(d) {
       `).join("")}
     </div>
     <div style="display:flex;gap:10px;">
-      <button onclick="doneBrowse()" style="flex:1;padding:13px 0;background:#F8F9FA;border:none;border-radius:12px;font-weight:700;font-size:14px;color:#6C757D;">View Portfolio</button>
+      <button onclick="viewPortfolio()" style="flex:1;padding:13px 0;background:#F8F9FA;border:none;border-radius:12px;font-weight:700;font-size:14px;color:#6C757D;">View Portfolio</button>
       <button onclick="doneBrowse()" style="flex:2;padding:13px 0;background:${inv.color};border:none;border-radius:12px;font-weight:800;font-size:14px;color:#fff;font-family:'Sora',sans-serif;">Browse More Farms →</button>
     </div>
   `;
@@ -7179,6 +7183,12 @@ function renderSuccess(d) {
   },150);
 }
 function doneBrowse(){state.page="browse";state.successData=null;showPage("browse");renderBrowse();}
+function viewPortfolio(){
+  state.page="browse";state.successData=null;
+  if(window.FarmAlly && typeof window.FarmAlly.navigate === "function") {
+    window.FarmAlly.navigate("wallet"); // also triggers a fresh faLoadWallet via the consolidated navigate hook
+  }
+}
 
 /* ─────────── EVENT LISTENERS ─────────── */
 document.getElementById("search-input").addEventListener("input",e=>{

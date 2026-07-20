@@ -6451,6 +6451,11 @@ function showPage(page) {
 function showBrowse() { state.page="browse"; showPage("browse"); renderBrowse(); }
 function showDetail(inv) {
   if(inv) state.selected=inv;
+  if(!state.selected) {
+    console.error('[FarmAlly] showDetail called with no matching investment — staying on browse.');
+    alert("Sorry, we couldn't open that listing. Please refresh and try again.");
+    return;
+  }
   state.page="detail";
   renderDetail(state.selected);
   showPage("detail");
@@ -6593,7 +6598,7 @@ function buildCard(inv, i) {
   const insuredBadge = inv.insured ? `<div class="card-insured-badge" style="border:1px solid ${inv.color};"><span style="font-size:10px;">🛡️</span><span style="font-size:9px;font-weight:700;color:${inv.color};">Insured</span></div>` : "";
   const riskSquares = [1,2,3].map(n=>`<span class="risk-sq" style="background:${n<=inv.riskScore?rm.dot:"#E9ECEF"};"></span>`).join("");
   return `
-    <div class="inv-card-wrap" style="animation-delay:${i*60}ms;" onclick="showDetail(INVESTMENTS.find(x=>x.id==='${inv.id}'))">
+    <div class="inv-card-wrap" style="animation-delay:${i*60}ms;" onclick="showDetail((window.FA_INVESTMENTS||[]).find(x=>x.id==='${inv.id}'))">
       <div class="card-header" style="background:${inv.lightColor};">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;">
           <span class="card-emoji">${inv.emoji}</span>

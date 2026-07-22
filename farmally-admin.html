@@ -201,7 +201,7 @@
 
     async function adminGetAllInvestments() {
       const { data, error } = await _sb
-        .from('user_investments')
+        .from('investments')
         .select('*, profiles(full_name, email), farm_listings(name, type)')
         .order('created_at', { ascending: false });
       if (error) throw error;
@@ -232,6 +232,22 @@
       return data;
     }
 
+    async function adminGetSecurityEvents(limit) {
+      const { data, error } = await _sb.rpc('admin_get_security_events', { p_limit: limit || 100 });
+      if (error) throw error;
+      return data;
+    }
+
+    async function adminFlagAccount(userId, reason) {
+      const { error } = await _sb.rpc('admin_flag_account', { target_user_id: userId, reason: reason });
+      if (error) throw error;
+    }
+
+    async function adminUnflagAccount(userId) {
+      const { error } = await _sb.rpc('admin_unflag_account', { target_user_id: userId });
+      if (error) throw error;
+    }
+
     async function adminToggleSuspend(userId) {
       const { data, error } = await _sb.rpc('admin_toggle_suspend', { target_user_id: userId });
       if (error) throw error;
@@ -253,6 +269,38 @@
         .order('created_at', { ascending: false });
       if (error) throw error;
       return data;
+    }
+
+    async function adminGetCategories() {
+      const { data, error } = await _sb.from('categories').select('*').order('name');
+      if (error) throw error;
+      return data;
+    }
+
+    function slugify(str) {
+      return (str || '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+    }
+
+    async function adminSaveCategory(category) {
+      const payload = {
+        name: category.name,
+        slug: category.slug || slugify(category.name),
+        description: category.desc || null,
+        emoji: category.emoji || null,
+      };
+      if (category.id) {
+        const { error } = await _sb.from('categories').update(payload).eq('id', category.id);
+        if (error) throw error;
+      } else {
+        const { data, error } = await _sb.from('categories').insert(payload).select().single();
+        if (error) throw error;
+        return data;
+      }
+    }
+
+    async function adminDeleteCategory(categoryId) {
+      const { error } = await _sb.from('categories').delete().eq('id', categoryId);
+      if (error) throw error;
     }
 
     async function adminSaveProduct(product) {
@@ -348,6 +396,7 @@
       // Admin
       adminGetAllUsers, adminGetAllTransactions, adminGetAllOrders,
       adminGetKPISummary, adminToggleSuspend, adminSetKYC,
+      adminGetSecurityEvents, adminFlagAccount, adminUnflagAccount, adminGetCategories, adminSaveCategory, adminDeleteCategory,
       adminGetAllInvestments, adminDeleteUser,
       adminGetProducts, adminSaveProduct, adminDeleteProduct, adminUpdateOrderStatus,
       // Realtime
@@ -2544,7 +2593,7 @@
               </div>
               <div style="display:flex;gap:10px;justify-content:flex-end;">
                 <button onclick="ecomCloseCatModal()" style="height:38px;padding:0 20px;border:1.5px solid #E5E7EB;border-radius:8px;background:#fff;font-size:13px;font-weight:600;color:#6B7280;cursor:pointer;">Cancel</button>
-                <button onclick="ecomSaveCategory()" style="height:38px;padding:0 24px;border:none;border-radius:8px;background:var(--farm-green);color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;">Save Category</button>
+                <button id="ecom-cmodal-save-btn" onclick="ecomSaveCategory()" style="height:38px;padding:0 24px;border:none;border-radius:8px;background:var(--farm-green);color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;">Save Category</button>
               </div>
             </div>
           </div>
@@ -2762,6 +2811,11 @@
       // request is Supabase's own RLS check against this session.
       const initials = (profile.full_name || 'Admin').split(' ').map(function(w){ return w[0]; }).join('').slice(0,2).toUpperCase();
       adminSetSession({ loggedIn: true, name: profile.full_name || 'Admin', initials: initials, ts: Date.now() });
+      try {
+        await FA.supabase.rpc('log_security_event', {
+          p_event_type: 'admin_login', p_user_email: email, p_details: null, p_severity: 'success'
+        });
+      } catch (logErr) { /* logging failure should never block admin access */ }
       adminShowAdminNav();
       btn.classList.remove('loading');
       btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg> Access Granted!';
@@ -2845,8 +2899,15 @@
     const panel = document.getElementById('admin-panel-' + name);
     if (panel) panel.classList.add('active');
     if (clickedBtn) clickedBtn.classList.add('active');
-    // Lazy-render security tab on first open
-    if (name === 'security') { adminRenderSecurity(); }
+    // Lazy-render security tab on first open — load real events first,
+    // otherwise this renders whatever was last in memory (often nothing).
+    if (name === 'security') {
+      if (typeof secLoadLiveData === 'function') {
+        secLoadLiveData().then(function(){ adminRenderSecurity(); });
+      } else {
+        adminRenderSecurity();
+      }
+    }
     if (name === 'listings') { listingsLoad(); }
     if (name === 'withdrawals') { adminLoadWithdrawals(); }
   };
@@ -2884,11 +2945,23 @@
       // The FA.isLoggedIn() gate has been removed — the admin authenticates
       // via local credentials, not Supabase, so that check always returned
       // false and the admin panel always showed mock/hardcoded data.
-      const [users, txns, invs] = await Promise.all([
+      //
+      // Promise.allSettled (not Promise.all) on purpose: previously a single
+      // failing query — e.g. a wrong table name — rejected the whole
+      // Promise.all immediately, which zeroed out ALL THREE data sets
+      // (users/transactions/investments showed 0 even when only one query
+      // was actually broken). Each source now succeeds or fails on its own.
+      const [usersResult, txnsResult, invsResult] = await Promise.allSettled([
         FA.adminGetAllUsers(),
         FA.adminGetAllTransactions(),
         FA.adminGetAllInvestments(),
       ]);
+      if (usersResult.status === 'rejected') console.error('[Admin] Failed to load users:', usersResult.reason && usersResult.reason.message);
+      if (txnsResult.status === 'rejected') console.error('[Admin] Failed to load transactions:', txnsResult.reason && txnsResult.reason.message);
+      if (invsResult.status === 'rejected') console.error('[Admin] Failed to load investments:', invsResult.reason && invsResult.reason.message);
+      const users = usersResult.status === 'fulfilled' ? usersResult.value : null;
+      const txns  = txnsResult.status  === 'fulfilled' ? txnsResult.value  : null;
+      const invs  = invsResult.status  === 'fulfilled' ? invsResult.value  : null;
 
       if (users && users.length > 0) {
         _LIVE_USERS.length = 0;
@@ -2906,8 +2979,21 @@
             walletNgn:    u.wallet_balance_kobo ? u.wallet_balance_kobo / 100 : 0,
             restricted:   u.is_suspended || false,
             warnings:     u.warning_count || 0,
+            isFlagged:    u.is_flagged || false,
+            flagReason:   u.flag_reason || null,
+            flaggedAt:    u.flagged_at || null,
           });
         });
+      }
+
+      // Load real security/audit events now that _LIVE_USERS is populated
+      // (secLoadLiveData looks users up by email). Was previously only
+      // triggered after a new event got logged, so nav badges and the
+      // Security tab showed nothing until an admin action happened to
+      // refresh it first.
+      if (typeof secLoadLiveData === 'function') {
+        await secLoadLiveData();
+        if (typeof umUpdateSecurityCount === 'function') umUpdateSecurityCount();
       }
 
       if (txns && txns.length > 0) {
@@ -3013,7 +3099,7 @@
         { label:'Total Tx Volume', value: fmtNaira(totalVolume) },
         { label:'Investment Volume', value: fmtNaira(totalInvVolume) },
         { label:'Active Investments', value: _LIVE_INVS.filter(function(i){return i.status==='active';}).length },
-        { label:'Avg Investment', value: fmtNaira(Math.round(totalInvVolume / totalInvs)) },
+        { label:'Avg Investment', value: totalInvs > 0 ? fmtNaira(Math.round(totalInvVolume / totalInvs)) : '₦0' },
         { label:'Platform Health', value: '✅ All Systems Go' },
       ].map(function(s, i, arr) {
         return '<div class="admin-summary-item"><div class="admin-summary-label">' + s.label + '</div><div class="admin-summary-value">' + s.value + '</div></div>'
@@ -3143,8 +3229,13 @@
     const wasSuspended = u.status === 'suspended';
     try {
       await FA.adminToggleSuspend(id);
-      umAddAuditEntry(wasSuspended ? 'Reactivated Account' : 'Suspended Account', u.name, wasSuspended ? 'success' : 'warn');
-      umAddSecurityLog(wasSuspended ? 'Account reactivated by admin' : 'Account suspended by admin', u.name, wasSuspended ? 'success' : 'warn');
+      try {
+        await FA.supabase.rpc('log_security_event', {
+          p_event_type: wasSuspended ? 'account_unsuspended' : 'account_suspended',
+          p_user_email: u.email, p_details: null,
+          p_severity: wasSuspended ? 'success' : 'warn'
+        });
+      } catch (logErr) { /* logging failure should never block the suspend action itself */ }
       umShowToast(wasSuspended ? '✅' : '🚫', wasSuspended ? u.name + ' account reactivated' : u.name + ' account suspended');
       // Reload live data and re-render
       await window.adminRenderDashboard();
@@ -3407,49 +3498,155 @@
      SECURITY MONITORING MODULE
   ══════════════════════════════════════════════════════════ */
 
-  // Live security/audit log (appended to at runtime)
-  var UM_SECURITY_LOG = [
-    { text:'<strong>Tunde Adeyemi</strong> logged in successfully', user:'Tunde Adeyemi', ip:'102.89.44.5',  time:'Today · 9:12 AM',  type:'success' },
-    { text:'<strong>Amaka Okonkwo</strong> logged in successfully',  user:'Amaka Okonkwo',  ip:'41.58.120.14', time:'Today · 8:44 AM',  type:'success' },
-    { text:'Failed login attempt for <strong>admin@farmally.ng</strong>', user:'Unknown', ip:'185.220.101.47', time:'Today · 7:15 AM', type:'fail' },
-    { text:'<strong>Emeka Nwosu</strong> attempted login — account suspended', user:'Emeka Nwosu', ip:'41.190.3.22', time:'Today · 6:55 AM', type:'warn' },
-    { text:'<strong>Bisi Oladele</strong> logged in successfully',   user:'Bisi Oladele',   ip:'197.210.54.8', time:'Yesterday · 6:05 PM', type:'success' },
-    { text:'3 failed login attempts from IP <strong>185.220.101.47</strong>', user:'Unknown', ip:'185.220.101.47', time:'Yesterday · 3:30 PM', type:'fail' },
-    { text:'<strong>Ngozi Anyanwu</strong> logged in successfully',  user:'Ngozi Anyanwu',  ip:'41.58.90.200', time:'Yesterday · 11:12 AM', type:'success' },
-    { text:'<strong>Musa Usman</strong> changed account password',   user:'Musa Usman',     ip:'102.91.200.12', time:'2 days ago · 3:15 PM', type:'info' },
-    { text:'Failed login attempt for <strong>seun@example.com</strong>', user:'Seun Okafor', ip:'41.190.3.99', time:'2 days ago · 10:45 AM', type:'fail' },
-    { text:'<strong>Adaeze Obi</strong> logged in successfully',     user:'Adaeze Obi',     ip:'197.210.8.77',  time:'3 days ago · 9:00 AM',  type:'success' },
-    { text:'New device login — <strong>Chidi Eze</strong> (Chrome / Windows)', user:'Chidi Eze', ip:'41.58.44.200', time:'3 days ago · 8:44 AM', type:'warn' },
-    { text:'<strong>Babatunde Olawale</strong> account suspended by admin', user:'Babatunde Olawale', ip:'Admin', time:'4 days ago · 2:00 PM', type:'warn' },
-  ];
+  // Populated from real Supabase data by secLoadLiveData() — see below.
+  // No longer hardcoded demo entries.
+  var UM_SECURITY_LOG    = [];
+  var UM_AUDIT_LOG       = [];
+  var UM_RISK_DATA       = [];
+  var UM_FLAGGED_ACCOUNTS = [];
 
-  var UM_AUDIT_LOG = [
-    { action:'Admin Login',          target:'—',                 admin:'Super Admin', ip:'192.168.1.1',   time:'Today · 9:05 AM',       result:'success' },
-    { action:'Suspended Account',    target:'Emeka Nwosu',       admin:'Super Admin', ip:'192.168.1.1',   time:'Today · 8:00 AM',       result:'warn'    },
-    { action:'Viewed User Profile',  target:'Tunde Adeyemi',     admin:'Super Admin', ip:'192.168.1.1',   time:'Yesterday · 4:30 PM',   result:'info'    },
-    { action:'Suspended Account',    target:'Babatunde Olawale', admin:'Super Admin', ip:'192.168.1.1',   time:'4 days ago · 2:00 PM',  result:'warn'    },
-    { action:'Viewed Transactions',  target:'Ngozi Anyanwu',     admin:'Super Admin', ip:'192.168.1.1',   time:'4 days ago · 1:15 PM',  result:'info'    },
-    { action:'Admin Login',          target:'—',                 admin:'Super Admin', ip:'192.168.1.1',   time:'5 days ago · 9:00 AM',  result:'success' },
-  ];
+  // Maps our security_events.event_type values to the {type} bucket the
+  // existing KPI/table rendering code already groups by.
+  var SEC_EVENT_TYPE_MAP = {
+    login_success:            'success',
+    login_failed:             'fail',
+    login_suspended_attempt:  'warn',
+    account_suspended:        'warn',
+    account_unsuspended:      'success',
+    account_flagged:          'warn',
+    account_unflagged:        'info',
+    admin_login:              'success',
+    password_changed:         'info',
+    profile_edited:           'info',
+    account_deleted:          'fail',
+    warning_sent:             'warn',
+    flag_note_added:          'info'
+  };
+  var SEC_EVENT_LABEL_MAP = {
+    login_success:            'logged in successfully',
+    login_failed:             'failed login attempt',
+    login_suspended_attempt:  'attempted login — account suspended',
+    account_suspended:        'account suspended by admin',
+    account_unsuspended:      'account reactivated by admin',
+    account_flagged:          'account flagged',
+    account_unflagged:        'account unflagged',
+    admin_login:              'admin logged in',
+    password_changed:         'changed account password',
+    profile_edited:           'profile edited by admin',
+    account_deleted:          'account permanently deleted by admin',
+    warning_sent:             'sent a warning (WhatsApp)',
+    flag_note_added:          'note added to flagged account'
+  };
+  // Which event types count toward the Audit Log tab (admin-initiated
+  // actions) vs the general Security Log (logins/account-status changes).
+  var SEC_AUDIT_TYPES = ['admin_login','account_suspended','account_unsuspended','account_flagged','account_unflagged','profile_edited','account_deleted','warning_sent','flag_note_added'];
 
-  var UM_RISK_DATA = [
-    { name:'Emeka Nwosu',       email:'emeka@example.com',  color:'#7C3AED', risk:'high', reasons:'Multiple failed logins, account suspended', score:85 },
-    { name:'Babatunde Olawale', email:'babs@example.com',   color:'#0891B2', risk:'high', reasons:'Suspicious withdrawal pattern, suspended',   score:78 },
-    { name:'Fatima Abubakar',   email:'fatima@example.com', color:'#DB2777', risk:'med',  reasons:'KYC not completed after 30 days',            score:45 },
-    { name:'Yetunde Bakare',    email:'yetunde@example.com',color:'#9333EA', risk:'med',  reasons:'KYC not completed, new device login',        score:40 },
-    { name:'Musa Usman',        email:'musa@example.com',   color:'#1E40AF', risk:'low',  reasons:'Failed withdrawal, password change',         score:22 },
-  ];
+  // Fetches real events from Supabase and rebuilds UM_SECURITY_LOG,
+  // UM_AUDIT_LOG, and UM_RISK_DATA from them. Called from
+  // adminRenderDashboard() alongside users/transactions/investments, and
+  // again whenever the Security tab itself is opened.
+  async function secLoadLiveData() {
+    try {
+      const events = await FA.adminGetSecurityEvents(200);
+      if (!events) return;
 
+      UM_SECURITY_LOG.length = 0;
+      UM_AUDIT_LOG.length = 0;
+      events.forEach(function(e) {
+        const who = e.user_email || 'Unknown';
+        const label = SEC_EVENT_LABEL_MAP[e.event_type] || e.event_type;
+        const timeStr = new Date(e.created_at).toLocaleString('en-NG', { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' });
+        const row = {
+          text: '<strong>' + who + '</strong> ' + label + (e.details ? ' — ' + e.details : ''),
+          user: who,
+          ip: '—', // real client-IP capture needs server-side logging (e.g. an Edge Function); not available from browser JS
+          time: timeStr,
+          type: SEC_EVENT_TYPE_MAP[e.event_type] || 'info'
+        };
+        UM_SECURITY_LOG.push(row);
+        if (SEC_AUDIT_TYPES.indexOf(e.event_type) !== -1) {
+          UM_AUDIT_LOG.push({
+            action: label.charAt(0).toUpperCase() + label.slice(1),
+            target: who,
+            admin: (adminGetSession() && adminGetSession().name) || 'Admin',
+            ip: '—',
+            time: timeStr,
+            result: SEC_EVENT_TYPE_MAP[e.event_type] || 'info'
+          });
+        }
+      });
+
+      // Real High-Risk scoring: users with 3+ failed logins in the last 7
+      // days, or any suspended-account login attempt, in the fetched window.
+      const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+      const byEmail = {};
+      events.forEach(function(e) {
+        if (new Date(e.created_at).getTime() < sevenDaysAgo) return;
+        if (!e.user_email) return;
+        if (!byEmail[e.user_email]) byEmail[e.user_email] = { fails: 0, suspendedAttempt: false };
+        if (e.event_type === 'login_failed') byEmail[e.user_email].fails++;
+        if (e.event_type === 'login_suspended_attempt') byEmail[e.user_email].suspendedAttempt = true;
+      });
+      UM_RISK_DATA.length = 0;
+      Object.keys(byEmail).forEach(function(email) {
+        const d = byEmail[email];
+        const score = Math.min(100, d.fails * 20 + (d.suspendedAttempt ? 40 : 0));
+        if (score < 20) return; // not worth surfacing
+        const u = _LIVE_USERS.find(function(x){ return x.email === email; });
+        UM_RISK_DATA.push({
+          name: u ? u.name : email,
+          email: email,
+          color: '#7C3AED',
+          risk: score >= 60 ? 'high' : (score >= 35 ? 'med' : 'low'),
+          reasons: (d.fails > 0 ? d.fails + ' failed login' + (d.fails===1?'':'s') + ' (7d)' : '') + (d.suspendedAttempt ? (d.fails>0?', ':'') + 'attempted login while suspended' : ''),
+          score: score
+        });
+      });
+      UM_RISK_DATA.sort(function(a,b){ return b.score - a.score; });
+
+      // Flagged accounts: real data from profiles.is_flagged (see _LIVE_USERS mapping).
+      UM_FLAGGED_ACCOUNTS.length = 0;
+      _LIVE_USERS.filter(function(u){ return u.isFlagged; }).forEach(function(u) {
+        UM_FLAGGED_ACCOUNTS.push({
+          id: u.id, name: u.name, email: u.email, color: '#7C3AED',
+          reason: u.flagReason || 'No reason recorded',
+          severity: 'high',
+          flaggedAt: u.flaggedAt ? new Date(u.flaggedAt).toLocaleString('en-NG', { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' }) : '—',
+          note: ''
+        });
+      });
+    } catch (err) {
+      console.error('[Admin] Failed to load security events:', err.message);
+      // Arrays stay empty — UI shows real "no data" states rather than fake fallback content.
+    }
+  }
+
+  // Thin wrapper kept so all existing call sites (suspend/reactivate,
+  // edit/delete user, flag/unflag, warnings) don't need individual changes.
+  // Persists a real row via log_security_event, then triggers a background
+  // reload so the log reflects the source of truth rather than an
+  // in-memory-only entry that would vanish on refresh.
   function umAddSecurityLog(text, user, type) {
-    UM_SECURITY_LOG.unshift({
-      text: text.includes('<strong>') ? text : '<strong>' + user + '</strong> — ' + text,
-      user: user, ip: '192.168.1.1 (Admin)',
-      time: 'Just now', type: type
-    });
+    const plain = text.replace(/<[^>]+>/g, '');
+    const u = _LIVE_USERS.find(function(x){ return x.name === user; });
+    FA.supabase.rpc('log_security_event', {
+      p_event_type: type === 'fail' ? 'account_deleted' : (type === 'warn' ? 'warning_sent' : (type === 'success' ? 'account_unsuspended' : 'profile_edited')),
+      p_user_email: u ? u.email : null,
+      p_details: plain,
+      p_severity: type
+    }).then(function(){ secLoadLiveData().then(function(){ if (typeof window.adminRenderSecurity === 'function') window.adminRenderSecurity(); }); })
+      .catch(function(err){ console.error('[Admin] Failed to log security event:', err.message); });
   }
 
   function umAddAuditEntry(action, target, result) {
-    UM_AUDIT_LOG.unshift({ action: action, target: target, admin: 'Super Admin', ip: '192.168.1.1', time: 'Just now', result: result });
+    const u = _LIVE_USERS.find(function(x){ return x.name === target; });
+    FA.supabase.rpc('log_security_event', {
+      p_event_type: 'profile_edited',
+      p_user_email: u ? u.email : null,
+      p_details: action,
+      p_severity: result
+    }).then(function(){ secLoadLiveData().then(function(){ if (typeof window.adminRenderSecurity === 'function') window.adminRenderSecurity(); }); })
+      .catch(function(err){ console.error('[Admin] Failed to log audit entry:', err.message); });
   }
 
   function umUpdateSecurityCount() {
@@ -3462,12 +3659,6 @@
     var flagBadge = document.getElementById('sec-flagged-badge');
     if (flagBadge) flagBadge.textContent = UM_FLAGGED_ACCOUNTS.length;
   }
-
-  /* ─── FLAGGED ACCOUNTS DATA ───────────────────────────────── */
-  var UM_FLAGGED_ACCOUNTS = [
-    { id:'fa1', name:'Emeka Nwosu',       email:'emeka@example.com',  color:'#7C3AED', reason:'Multiple failed logins, account suspended', severity:'high',   flaggedAt:'Today · 8:00 AM',    note:'Contacted user — no response. Escalating to compliance team.' },
-    { id:'fa2', name:'Babatunde Olawale', email:'babs@example.com',   color:'#0891B2', reason:'Suspicious withdrawal pattern, large debit spike', severity:'high', flaggedAt:'4 days ago · 2:00 PM', note:'' },
-  ];
 
   /* ─── SUSPICIOUS ACTIVITY DETECTION ─────────────────────── */
   function secGetSuspiciousAlerts() {
@@ -3839,13 +4030,26 @@
         + '<span class="sec-ap-btn-desc">WhatsApp notification + logged to audit</span>'
         + '</button>';
 
+      var isFlagged = u && u.isFlagged;
+      var flagBtn = isFlagged
+        ? '<button class="sec-ap-action-btn ap-unflag" onclick="secApUnflag()">'
+          + '<span class="sec-ap-btn-icon">🏳️</span>'
+          + '<span class="sec-ap-btn-label">Unflag</span>'
+          + '<span class="sec-ap-btn-desc">Clear flag on this account</span>'
+          + '</button>'
+        : '<button class="sec-ap-action-btn ap-flag" onclick="secApFlag()">'
+          + '<span class="sec-ap-btn-icon">🚩</span>'
+          + '<span class="sec-ap-btn-label">Flag Account</span>'
+          + '<span class="sec-ap-btn-desc">Mark for investigation</span>'
+          + '</button>';
+
       var viewBtn = '<button class="sec-ap-action-btn ap-view" onclick="secApViewActivity()">'
         + '<span class="sec-ap-btn-icon">👁</span>'
         + '<span class="sec-ap-btn-label">View Activity</span>'
         + '<span class="sec-ap-btn-desc">Open full user profile & history</span>'
         + '</button>';
 
-      actionsEl.innerHTML = suspendBtn + restrictBtn + warnBtn + viewBtn;
+      actionsEl.innerHTML = suspendBtn + restrictBtn + warnBtn + flagBtn + viewBtn;
     }
 
     // Open the panel
@@ -3866,8 +4070,12 @@
     if (!u) return;
     try {
       await FA.adminToggleSuspend(u.id);
-      umAddAuditEntry('Suspended Account', name, 'warn');
-      umAddSecurityLog('<strong>' + name + '</strong> suspended by admin via security panel', name, 'warn');
+      try {
+        await FA.supabase.rpc('log_security_event', {
+          p_event_type: 'account_suspended', p_user_email: u.email,
+          p_details: 'Suspended via security panel', p_severity: 'warn'
+        });
+      } catch (logErr) { /* best-effort */ }
       secCloseActionPanel();
       umShowToast('🚫', name + ' has been suspended');
       await window.adminRenderDashboard();
@@ -3884,10 +4092,50 @@
     if (!u) return;
     try {
       await FA.adminToggleSuspend(u.id);
-      umAddAuditEntry('Reactivated Account', name, 'success');
-      umAddSecurityLog('<strong>' + name + '</strong> account reactivated by admin', name, 'success');
+      try {
+        await FA.supabase.rpc('log_security_event', {
+          p_event_type: 'account_unsuspended', p_user_email: u.email,
+          p_details: 'Reactivated via security panel', p_severity: 'success'
+        });
+      } catch (logErr) { /* best-effort */ }
       secCloseActionPanel();
       umShowToast('✅', name + ' account reactivated');
+      await window.adminRenderDashboard();
+      secRenderSubpanel(_secActiveTab);
+      umUpdateSecurityCount();
+    } catch(err) {
+      umShowToast('❌', 'Failed: ' + (err.message || 'Unknown error'));
+    }
+  };
+
+  /* ── Action: Flag / Unflag ───────────────────────────────── */
+  window.secApFlag = async function() {
+    var name = _secApTargetName;
+    var u = _LIVE_USERS.find(function(x){ return x.name === name; });
+    if (!u) return;
+    var reason = prompt('Why are you flagging ' + name + '?');
+    if (reason === null) return; // cancelled
+    if (!reason.trim()) { umShowToast('❌', 'A reason is required to flag an account'); return; }
+    try {
+      await FA.adminFlagAccount(u.id, reason.trim());
+      secCloseActionPanel();
+      umShowToast('🚩', name + ' has been flagged');
+      await window.adminRenderDashboard();
+      secRenderSubpanel(_secActiveTab);
+      umUpdateSecurityCount();
+    } catch(err) {
+      umShowToast('❌', 'Failed: ' + (err.message || 'Unknown error'));
+    }
+  };
+
+  window.secApUnflag = async function() {
+    var name = _secApTargetName;
+    var u = _LIVE_USERS.find(function(x){ return x.name === name; });
+    if (!u) return;
+    try {
+      await FA.adminUnflagAccount(u.id);
+      secCloseActionPanel();
+      umShowToast('✅', name + ' has been unflagged');
       await window.adminRenderDashboard();
       secRenderSubpanel(_secActiveTab);
       umUpdateSecurityCount();
@@ -4184,9 +4432,10 @@
 
   async function ecomLoadFromSupabase() {
     try {
-      const [products, orders] = await Promise.all([
+      const [products, orders, categories] = await Promise.all([
         FA.adminGetProducts(),
         FA.adminGetAllOrders(),
+        FA.adminGetCategories(),
       ]);
 
       if (products && products.length > 0) {
@@ -4237,6 +4486,25 @@
         });
       }
 
+      if (categories && categories.length > 0) {
+        // Decorative fallbacks only — the real id/name/slug always come from
+        // the database. Previously this whole list (including counts) was
+        // hardcoded and never touched the categories table at all.
+        const emojiFallback = { food:'🥬', inputs:'🧪', livestock:'🐄', machinery:'🚜' };
+        ECOM_CATEGORIES = categories.map(function(c) {
+          const productCount = ECOM_PRODUCTS.filter(function(p){ return p.cat === c.slug; }).length;
+          return {
+            id:    c.id,
+            name:  c.name,
+            emoji: c.emoji || emojiFallback[c.slug] || '📦',
+            desc:  c.description || '',
+            count: productCount,
+            slug:  c.slug,
+          };
+        });
+        ECOM_CAT_NEXT_ID = null; // real inserts get their id from Supabase now, not a local counter
+      }
+
       ecomRenderProducts();
       ecomRenderOrders();
       ecomRenderInventory();
@@ -4250,13 +4518,10 @@
 
   var ECOM_ORDERS = [];
 
-  var ECOM_CATEGORIES = [
-    { id:'food',       name:'Food Products',  emoji:'🥬', desc:'Fresh produce, grains, protein & more', count:0 },
-    { id:'inputs',     name:'Farm Inputs',    emoji:'🧪', desc:'Seeds, fertilizers, pesticides, tools', count:0 },
-    { id:'livestock',  name:'Livestock',      emoji:'🐄', desc:'Live animals and livestock products',   count:0 },
-    { id:'machinery',  name:'Machinery',      emoji:'🚜', desc:'Farm equipment and machinery',          count:0 },
-  ];
-  var ECOM_CAT_NEXT_ID = 5;
+  // Populated from the real categories table by ecomLoadFromSupabase().
+  // No longer hardcoded demo entries.
+  var ECOM_CATEGORIES = [];
+  var ECOM_CAT_NEXT_ID = null;
 
 
   var _ecomActiveOrderFilter  = 'all';
@@ -4860,7 +5125,7 @@
     _ecomEditCatId = null;
   };
 
-  window.ecomSaveCategory = function() {
+  window.ecomSaveCategory = async function() {
     var name  = (document.getElementById('ecom-cmodal-name').value || '').trim();
     if (!name) { document.getElementById('ecom-cmodal-name').style.borderColor='#EF4444'; return; }
     var data = {
@@ -4868,17 +5133,23 @@
       desc:  (document.getElementById('ecom-cmodal-desc').value  || '').trim(),
       emoji: (document.getElementById('ecom-cmodal-emoji').value || '').trim() || '📂',
     };
-    if (_ecomEditCatId !== null) {
-      var c = ECOM_CATEGORIES.find(function(x){return x.id===_ecomEditCatId;});
-      if (c) Object.assign(c, data);
-    } else {
-      data.id    = 'cat_' + (ECOM_CAT_NEXT_ID++);
-      data.count = 0;
-      ECOM_CATEGORIES.push(data);
+    var saveBtn = document.getElementById('ecom-cmodal-save-btn');
+    if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = 'Saving…'; }
+    try {
+      if (_ecomEditCatId !== null) {
+        data.id = _ecomEditCatId;
+        await FA.adminSaveCategory(data);
+      } else {
+        await FA.adminSaveCategory(data);
+      }
+      await ecomLoadFromSupabase(); // reload real data so IDs/counts reflect what's actually in the DB
+      if (typeof showToast === 'function') showToast('✅', 'Category saved');
+      ecomCloseCatModal();
+    } catch (err) {
+      if (typeof showToast === 'function') showToast('❌', 'Failed to save category: ' + (err.message || 'Unknown error'));
+    } finally {
+      if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = 'Save Category'; }
     }
-    ecomRenderCategories();
-    if (typeof showToast === 'function') showToast('✅', 'Category saved');
-    ecomCloseCatModal();
   };
 
   /* ── INVENTORY ─────────────────────────────────────────── */

@@ -7486,10 +7486,10 @@ document.addEventListener("DOMContentLoaded", window.marketplaceInit);
   <!-- PORTFOLIO -->
   <div id="tab-portfolio" class="tab-panel">
     <div class="g4">
-      <div class="stat-card"><div class="stat-label">Portfolio Value</div><div class="stat-value">₦4.83M</div><div class="stat-sub" style="color:var(--green)">↑ +₦641K this month</div></div>
-      <div class="stat-card"><div class="stat-label">Total Invested</div><div class="stat-value">₦4.34M</div><div class="stat-sub" style="color:var(--mid)">Principal deployed</div></div>
-      <div class="stat-card"><div class="stat-label">Unrealised Gains</div><div class="stat-value">₦147K</div><div class="stat-sub" style="color:var(--blue)">Across 3 farms</div></div>
-      <div class="stat-card"><span class="stat-badge">vs 19.2% avg</span><div class="stat-label">Avg ROI</div><div class="stat-value">18.4%</div><div class="stat-sub" style="color:var(--green)">Weighted average</div></div>
+      <div class="stat-card"><div class="stat-label">Portfolio Value</div><div class="stat-value" id="pfStatValue">₦0</div><div class="stat-sub" style="color:var(--green)" id="pfStatValueSub">—</div></div>
+      <div class="stat-card"><div class="stat-label">Total Invested</div><div class="stat-value" id="pfStatInvested">₦0</div><div class="stat-sub" style="color:var(--mid)">Principal deployed</div></div>
+      <div class="stat-card"><div class="stat-label">Unrealised Gains</div><div class="stat-value" id="pfStatGains">₦0</div><div class="stat-sub" style="color:var(--blue)" id="pfStatGainsSub">—</div></div>
+      <div class="stat-card"><span class="stat-badge" id="pfStatRoiBadge">vs 19.2% avg</span><div class="stat-label">Avg ROI</div><div class="stat-value" id="pfStatRoi">0%</div><div class="stat-sub" style="color:var(--green)">Weighted average</div></div>
     </div>
     <div class="g32">
       <div class="card">
@@ -7508,7 +7508,7 @@ document.addEventListener("DOMContentLoaded", window.marketplaceInit);
     <div class="card">
       <div class="sh"><div><h2>Active Investments</h2><p>All current positions</p></div></div>
       <div class="tbl-head" style="grid-template-columns:2.5fr 1fr 1fr 1fr 1fr 120px">
-        ${["Farm","Invested","Current Value","Earned","ROI","Status"].map(h=>`<span class="tbl-hcell">${h}</span>`).join("")}
+        <span class="tbl-hcell">Farm</span><span class="tbl-hcell">Invested</span><span class="tbl-hcell">Current Value</span><span class="tbl-hcell">Earned</span><span class="tbl-hcell">ROI</span><span class="tbl-hcell">Status</span>
       </div>
       <div id="investTable"></div>
     </div>
@@ -7877,6 +7877,68 @@ window.faLoadWallet = async function() {
           ALLOCATION.push({ label: entry[0], pct: Math.round(entry[1]/allocTotal*100), color: catColors[entry[0]] || '#6C757D' });
         });
         if (typeof drawDonut === 'function') drawDonut('donut1','donut1Legend', ALLOCATION, 130, 52);
+        // The Portfolio tab's own donut (donut2) was never refreshed here before —
+        // it only ever drew whatever ALLOCATION was at page-parse time (empty).
+        // Pass the real invested total through instead of drawDonut2's old
+        // hardcoded ₦4,825,600 fallback.
+        if (typeof drawDonut2 === 'function') drawDonut2(allocTotal);
+      }
+
+      // ── Portfolio tab: stat cards ──────────────────────────────
+      var portfolioValue = totalInvested + totalEarned;
+      setText('pfStatValue',    FA.fmtNaira(FA.nairaToKobo(portfolioValue)));
+      setText('pfStatInvested', FA.fmtNaira(FA.nairaToKobo(totalInvested)));
+      setText('pfStatGains',    FA.fmtNaira(FA.nairaToKobo(totalEarned)));
+      setText('pfStatGainsSub', 'Across ' + activeCount + ' farm' + (activeCount === 1 ? '' : 's'));
+      setText('pfStatRoi',      avgRoi.toFixed(1) + '%');
+      var pfRoiBadge = document.getElementById('pfStatRoiBadge');
+      if (pfRoiBadge) pfRoiBadge.textContent = avgRoi > 0 ? avgRoi.toFixed(1) + '% avg' : 'No data yet';
+      var pfValueSub = document.getElementById('pfStatValueSub');
+      if (pfValueSub) pfValueSub.textContent = totalEarned > 0
+        ? '↑ +' + FA.fmtNaira(FA.nairaToKobo(totalEarned)) + ' in gains'
+        : 'No gains yet';
+
+      // ── Portfolio Growth chart: 12-month trajectory ─────────────
+      // Was previously dead code — CHART_12M was declared but never
+      // populated, and drawPortfolioChart() was never called anywhere.
+      // Built the same way MONTHLY_EARNINGS is bucketed above: real
+      // 'investment' and 'return' transactions from the trailing 12
+      // months, summed into a running cumulative total. The total for
+      // the current month is anchored to the real current portfolio
+      // value (totalInvested + totalEarned, from actual investment
+      // records) so the chart's latest point always matches the KPI
+      // cards above, even though our transaction fetch (last 20) may
+      // not capture a very long history for older/heavier accounts.
+      if (txns && txns.length > 0) {
+        var pfNow = new Date();
+        var pfMonthLabels = [];
+        for (var pi = 11; pi >= 0; pi--) {
+          var pd = new Date(pfNow.getFullYear(), pfNow.getMonth() - pi, 1);
+          pfMonthLabels.push(pd.toLocaleDateString('en-NG', { month: 'short' }));
+        }
+        var monthlyDelta = new Array(12).fill(0);
+        txns.forEach(function(t) {
+          if (t.type !== 'investment' && t.type !== 'return') return;
+          var td = new Date(t.created_at);
+          var monthsAgo = (pfNow.getFullYear() - td.getFullYear()) * 12 + (pfNow.getMonth() - td.getMonth());
+          if (monthsAgo >= 0 && monthsAgo < 12) {
+            monthlyDelta[11 - monthsAgo] += FA.koboToNaira(t.amount_kobo);
+          }
+        });
+        var cumulative = new Array(12);
+        var acc = portfolioValue;
+        for (var mi = 11; mi >= 0; mi--) {
+          cumulative[mi] = acc;
+          acc -= monthlyDelta[mi];
+        }
+        CHART_12M.length = 0;
+        pfMonthLabels.forEach(function(label, idx) {
+          CHART_12M.push({ m: label, portfolio: Math.max(0, cumulative[idx]) });
+        });
+        if (typeof drawPortfolioChart === 'function') {
+          drawPortfolioChart('portfolioChart', CHART_12M);
+          drawPortfolioChart('portfolioChart2', CHART_12M);
+        }
       }
     }
 
@@ -8767,7 +8829,8 @@ function updateWithdrawUI(){
 }
 
 /* ── DONUT 2 LEGEND ── */
-function drawDonut2(){
+function drawDonut2(invTotal){
+  invTotal = invTotal || 0; // real total invested, passed in by faLoadWallet; 0 at page-parse time before live data arrives
   const svg=document.getElementById("donut2"); if(!svg) return;
   const size=160,inner=64,r=(size-8)/2,cx=size/2,cy=size/2;
   let cumAngle=-Math.PI/2, html="";
@@ -8781,7 +8844,6 @@ function drawDonut2(){
   });
   html+=`<circle cx="${cx}" cy="${cy}" r="${inner}" fill="white"/>`;
   svg.innerHTML=html;
-  const invTotal=4825600;
   document.getElementById("donut2Legend").innerHTML=ALLOCATION.map(a=>`
     <div class="legend-row">
       <div class="dot" style="background:${a.color}"></div>

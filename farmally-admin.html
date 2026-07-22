@@ -1843,6 +1843,18 @@
                   <label class="lmodal-label">Emoji</label>
                   <input type="text" id="lmodal-emoji" placeholder="🌾" maxlength="4" class="lmodal-input" />
                 </div>
+                <div style="grid-column:1/-1;">
+                  <label class="lmodal-label">Farm Photo</label>
+                  <div style="display:flex;align-items:center;gap:14px;">
+                    <div id="lmodal-img-preview-wrap" style="display:none;">
+                      <img id="lmodal-img-preview" src="" alt="" style="height:64px;width:64px;object-fit:cover;border-radius:10px;border:2px solid #D1FAE5;" />
+                    </div>
+                    <button type="button" onclick="document.getElementById('lmodal-img-input').click()" style="height:38px;padding:0 16px;border:1px solid #D1D5DB;border-radius:8px;background:#fff;font-size:13px;font-weight:600;color:#374151;cursor:pointer;">📷 Upload Photo</button>
+                    <button type="button" id="lmodal-img-remove-btn" onclick="listingsRemoveImage()" style="display:none;height:38px;padding:0 14px;border:1px solid #FEE2E2;border-radius:8px;background:#fff;font-size:13px;font-weight:600;color:#DC2626;cursor:pointer;">Remove</button>
+                    <input type="file" id="lmodal-img-input" accept="image/*" style="display:none;" onchange="listingsHandleImageUpload(event)" />
+                  </div>
+                  <div style="font-size:11px;color:#9CA3AF;margin-top:4px;">Shown on the marketplace card and farm detail page. Falls back to the emoji above if no photo is uploaded.</div>
+                </div>
 
                 <div style="grid-column:1/-1;border-top:1px dashed #E5E7EB;margin-top:4px;padding-top:16px;">
                   <div style="font-size:12px;font-weight:800;color:#2D6A4F;margin-bottom:10px;">Slot pricing</div>
@@ -5876,7 +5888,7 @@
       try {
         var res = await FA.supabase
           .from('farm_listings')
-          .select('id,name,type,location,emoji,roi_percent,risk_level,duration_months,min_investment_kobo,max_investment_kobo,total_slots,filled_slots,status,is_featured,funding_target_kobo')
+          .select('id,name,type,location,emoji,image_url,roi_percent,risk_level,duration_months,min_investment_kobo,max_investment_kobo,total_slots,filled_slots,status,is_featured,funding_target_kobo,funding_raised_kobo,description,highlights,manager_name,manager_experience,is_insured,insurance_provider')
           .order('created_at', { ascending: false });
         if (res.error) throw res.error;
         _listings = res.data || [];
@@ -5905,8 +5917,11 @@
         var minSlots  = slotPrice > 0 ? Math.round(l.min_investment_kobo / slotPrice) : '—';
         var pillClass = 'listings-status-' + (l.status || 'active');
         var statusLabel = (l.status || 'active').charAt(0).toUpperCase() + (l.status || 'active').slice(1);
+        var thumbHtml = l.image_url
+          ? '<img src="' + l.image_url + '" style="width:28px;height:28px;object-fit:cover;border-radius:6px;border:1px solid #E5E7EB;margin-right:6px;vertical-align:middle;" />'
+          : '';
         return '<tr>' +
-          '<td style="font-weight:600;color:#111827;">' + (l.emoji||'🌾') + ' ' + l.name + (l.is_featured ? ' <span style="background:#FEF9C3;color:#854D0E;font-size:10px;font-weight:700;padding:1px 5px;border-radius:4px;margin-left:4px;">★ Featured</span>' : '') + '</td>' +
+          '<td style="font-weight:600;color:#111827;">' + thumbHtml + (l.image_url ? '' : (l.emoji||'🌾') + ' ') + l.name + (l.is_featured ? ' <span style="background:#FEF9C3;color:#854D0E;font-size:10px;font-weight:700;padding:1px 5px;border-radius:4px;margin-left:4px;">★ Featured</span>' : '') + '</td>' +
           '<td style="color:#6B7280;">' + (TYPE_LABELS[l.type] || l.type) + '</td>' +
           '<td style="color:#6B7280;">' + (l.location||'—') + '</td>' +
           '<td style="color:#111827;font-weight:600;">' + fmt(slotPrice) + '</td>' +
@@ -5971,6 +5986,20 @@
       document.getElementById('lmodal-error').style.display = 'none';
       document.getElementById('listing-modal-title').textContent = listing ? 'Edit Listing' : 'Add Listing';
 
+      window._listingPendingImageUrl = listing ? (listing.image_url || null) : null;
+      var imgPreview = document.getElementById('lmodal-img-preview');
+      var imgWrap    = document.getElementById('lmodal-img-preview-wrap');
+      var imgRemoveBtn = document.getElementById('lmodal-img-remove-btn');
+      if (window._listingPendingImageUrl) {
+        imgPreview.src = window._listingPendingImageUrl;
+        imgWrap.style.display = 'block';
+        imgRemoveBtn.style.display = 'inline-block';
+      } else {
+        imgPreview.src = '';
+        imgWrap.style.display = 'none';
+        imgRemoveBtn.style.display = 'none';
+      }
+
       listingsRecalcPreview();
       document.getElementById('listing-modal-overlay').style.display = 'block';
       document.getElementById('listing-modal').style.display = 'block';
@@ -5979,6 +6008,27 @@
     window.listingsCloseModal = function() {
       document.getElementById('listing-modal-overlay').style.display = 'none';
       document.getElementById('listing-modal').style.display = 'none';
+    };
+
+    window.listingsHandleImageUpload = function(event) {
+      var file = event.target.files && event.target.files[0];
+      if (!file) return;
+      var reader = new FileReader();
+      reader.onload = function(e) {
+        document.getElementById('lmodal-img-preview').src = e.target.result;
+        document.getElementById('lmodal-img-preview-wrap').style.display = 'block';
+        document.getElementById('lmodal-img-remove-btn').style.display = 'inline-block';
+        window._listingPendingImageUrl = e.target.result;
+      };
+      reader.readAsDataURL(file);
+    };
+
+    window.listingsRemoveImage = function() {
+      window._listingPendingImageUrl = null;
+      document.getElementById('lmodal-img-preview').src = '';
+      document.getElementById('lmodal-img-preview-wrap').style.display = 'none';
+      document.getElementById('lmodal-img-remove-btn').style.display = 'none';
+      document.getElementById('lmodal-img-input').value = '';
     };
 
     // ── Save (insert or update) ──────────────────────────────
@@ -6010,6 +6060,7 @@
         type:                type,
         location:            location || 'Nigeria',
         emoji:               document.getElementById('lmodal-emoji').value || '🌾',
+        image_url:           window._listingPendingImageUrl || null,
         risk_level:          document.getElementById('lmodal-risk').value,
         duration_months:     duration,
         roi_percent:         roi,

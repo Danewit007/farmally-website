@@ -51,9 +51,28 @@
 
     async function signIn(email, password) {
       const { data, error } = await _sb.auth.signInWithPassword({ email, password });
-      if (error) throw error;
+      if (error) {
+        // Best-effort: log the failed attempt. Never let a logging failure
+        // mask the real auth error from the caller.
+        try {
+          await _sb.rpc('log_security_event', {
+            p_event_type: 'login_failed', p_user_email: email,
+            p_details: error.message, p_severity: 'fail'
+          });
+        } catch (logErr) { /* logging failure is not the user's problem */ }
+        throw error;
+      }
       _session = data.session;
       await loadProfile();
+      const isSuspended = !!(_profile && _profile.is_suspended);
+      try {
+        await _sb.rpc('log_security_event', {
+          p_event_type: isSuspended ? 'login_suspended_attempt' : 'login_success',
+          p_user_email: email,
+          p_details: isSuspended ? 'Login attempt on a suspended account' : null,
+          p_severity: isSuspended ? 'warn' : 'success'
+        });
+      } catch (logErr) { /* logging failure should never block a successful login */ }
       return data;
     }
 
@@ -5617,6 +5636,7 @@ window.faLoadMarketplace = async function() {
         category: l.type.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase()),
         location: l.location,
         emoji: l.emoji || '🌾',
+        imageUrl: l.image_url || null,
         tagline: l.tagline || '',
         roi: parseFloat(l.roi_percent),
         roiLabel: l.roi_percent + '% p.a.',
@@ -6633,11 +6653,14 @@ function buildCard(inv, i) {
   const tags = inv.tags.map(t=>`<span class="card-tag" style="background:${tagColor(t,inv)};">${t}</span>`).join("");
   const insuredBadge = inv.insured ? `<div class="card-insured-badge" style="border:1px solid ${inv.color};"><span style="font-size:10px;">🛡️</span><span style="font-size:9px;font-weight:700;color:${inv.color};">Insured</span></div>` : "";
   const riskSquares = [1,2,3].map(n=>`<span class="risk-sq" style="background:${n<=inv.riskScore?rm.dot:"#E9ECEF"};"></span>`).join("");
+  const iconHtml = inv.imageUrl
+    ? `<img src="${inv.imageUrl}" alt="${inv.name}" style="width:44px;height:44px;object-fit:cover;border-radius:10px;border:1px solid rgba(0,0,0,0.06);" />`
+    : `<span class="card-emoji">${inv.emoji}</span>`;
   return `
     <div class="inv-card-wrap" style="animation-delay:${i*60}ms;" onclick="showDetail((window.FA_INVESTMENTS||[]).find(x=>x.id==='${inv.id}'))">
       <div class="card-header" style="background:${inv.lightColor};">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;">
-          <span class="card-emoji">${inv.emoji}</span>
+          ${iconHtml}
           <div class="card-tags">${tags}</div>
         </div>
         <div class="card-name">${inv.name}</div>
@@ -6749,7 +6772,9 @@ function renderDetail(inv) {
         <div class="detail-flex">
           <div class="detail-left">
             <div style="display:flex;align-items:center;gap:14px;margin-bottom:12px;">
-              <span class="detail-emoji">${inv.emoji}</span>
+              ${inv.imageUrl
+                ? `<img src="${inv.imageUrl}" alt="${inv.name}" style="width:64px;height:64px;object-fit:cover;border-radius:14px;border:1px solid rgba(0,0,0,0.06);flex-shrink:0;" />`
+                : `<span class="detail-emoji">${inv.emoji}</span>`}
               <div>
                 <div style="display:flex;gap:6px;margin-bottom:6px;">
                   ${verifiedBadge}
